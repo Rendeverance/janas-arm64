@@ -471,6 +471,12 @@ det8(const float *g, const float *u, float *h, int n)
         _mm256_storeu_ps(h + i, janas_silu_mul_det8(_mm256_loadu_ps(g + i),
                                                     _mm256_loadu_ps(u + i)));
 }
+#elif defined(__aarch64__)
+static void det4(const float *g, const float *u, float *h, int n)
+{
+    for (int i = 0; i < n; i += 4)
+        vst1q_f32(h + i, janas_silu_mul_det4(vld1q_f32(g + i), vld1q_f32(u + i)));
+}
 #endif
 
 /* The deterministic functions: scalar and AVX2 give the same bits; the
@@ -496,9 +502,13 @@ static void test_det(void)
             for (int i = 0; i < 1024; i++)
                 bad += memcmp(&a[i], &b[i], 4) != 0;
         }
+#elif defined(__aarch64__)
+        det4(g, u, b, 1024);
+        for (int i = 0; i < 1024; i++)
+            bad += memcmp(&a[i], &b[i], 4) != 0;
 #endif
     }
-    CHECK(bad == 0, "silu_mul_det: %d scalar/AVX2 differences", bad);
+    CHECK(bad == 0, "silu_mul_det: %d scalar/vector differences", bad);
     double worst = 0;
     for (int i = 0; i < 100000; i++) {
         float d = ldexpf(rndf(1.0f, 2.0f), (int)(rnd() % 200) - 100);

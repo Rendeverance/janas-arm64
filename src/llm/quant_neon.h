@@ -233,43 +233,6 @@ static NEON_DP float q5_1_dot_neon(const struct janas_block_q5_1 *w,
 /* Q6_K: per group of 16 the exact sum of (q - 32) x a, times the group's
    scale, all in one int32 per block; then one fma per block, as the
    reference. */
-static NEON_DP float q6k_dot_neon(const struct janas_block_q6k *w,
-                                  const struct janas_block_q8k *x, size_t nb)
-{
-    float acc = 0.0f;
-    const uint8x16_t m4 = vdupq_n_u8(15), m2 = vdupq_n_u8(3);
-    const int8x16_t c32 = vdupq_n_s8(32);
-    for (size_t b = 0; b < nb; b++) {
-        const struct janas_block_q6k *wb = &w[b];
-        const int8_t *a = x[b].qs;
-        int32x4_t si = vdupq_n_s32(0); /* scale x dot, per lane: exact */
-        for (int n = 0; n < 2; n++) {
-            const uint8_t *ql = wb->ql + 64 * n, *qh = wb->qh + 32 * n;
-            for (int h = 0; h < 2; h++) { /* 16 of the 32 l at a time */
-                uint8x16_t l0 = vld1q_u8(ql + 16 * h);      /* part 0 / 2 */
-                uint8x16_t l1 = vld1q_u8(ql + 32 + 16 * h); /* part 1 / 3 */
-                uint8x16_t hh = vld1q_u8(qh + 16 * h);
-                int8x16_t q[4];
-                q[0] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vandq_u8(l0, m4),
-                           vshlq_n_u8(vandq_u8(hh, m2), 4))), c32);
-                q[1] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vandq_u8(l1, m4),
-                           vshlq_n_u8(vandq_u8(vshrq_n_u8(hh, 2), m2), 4))), c32);
-                q[2] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(l0, 4),
-                           vshlq_n_u8(vandq_u8(vshrq_n_u8(hh, 4), m2), 4))), c32);
-                q[3] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(l1, 4),
-                           vshlq_n_u8(vshrq_n_u8(hh, 6), 4))), c32);
-                for (int p = 0; p < 4; p++) {
-                    /* weights v = 128n + 32p + 16h .. +15: group v / 16 */
-                    int v = 128 * n + 32 * p + 16 * h;
-                    int32x4_t s = vdotq_s32(vdupq_n_s32(0), q[p], vld1q_s8(a + v));
-                    si = vmlaq_n_s32(si, s, wb->scales[v / 16]);
-                }
-            }
-        }
-        acc = fmaf(neon_h2f(wb->d) * x[b].d, (float)vaddvq_s32(si), acc);
-    }
-    return acc;
-}
 
 /* Whether the CPU has the dot-product instructions (SDOT/UDOT). */
 static int neon_has_dotprod(void)
@@ -411,14 +374,22 @@ NEON_DOTN_K void q6k_dotn_neon_k(const struct janas_block_q6k *w,
             }
         }
         float d = neon_h2f(wb->d);
+        /* the 16 group scales as four int32 vectors, once for all vectors */
+        int8x16_t sc8 = vld1q_s8(wb->scales);
+        int16x8_t sl = vmovl_s8(vget_low_s8(sc8)), sh = vmovl_s8(vget_high_s8(sc8));
+        int32x4_t sv0 = vmovl_s16(vget_low_s16(sl)), sv1 = vmovl_s16(vget_high_s16(sl));
+        int32x4_t sv2 = vmovl_s16(vget_low_s16(sh)), sv3 = vmovl_s16(vget_high_s16(sh));
         for (int v = 0; v < nv; v++) {
-            const struct janas_block_q8k *xb = x + v * xs + b;
-            int32x4_t si = vdupq_n_s32(0);
-            for (int g = 0; g < 16; g++) {
-                int32x4_t s = vdotq_s32(vdupq_n_s32(0), q[g], vld1q_s8(xb->qs + 16 * g));
-                si = vmlaq_n_s32(si, s, wb->scales[g]);
-            }
-            acc[v] = fmaf(d * xb->d, (float)vaddvq_s32(si), acc[v]);
+            const int8_t *a = (x + v * xs + b)->qs;
+            int32x4_t s[16];
+            for (int g = 0; g < 16; g++)
+                s[g] = vdotq_s32(vdupq_n_s32(0), q[g], vld1q_s8(a + 16 * g));
+            /* lane j of red4(s[4i..4i+3]) is group 4i + j: times its scale */
+            int32x4_t si = vmulq_s32(neon_red4(s[0], s[1], s[2], s[3]), sv0);
+            si = vmlaq_s32(si, neon_red4(s[4], s[5], s[6], s[7]), sv1);
+            si = vmlaq_s32(si, neon_red4(s[8], s[9], s[10], s[11]), sv2);
+            si = vmlaq_s32(si, neon_red4(s[12], s[13], s[14], s[15]), sv3);
+            acc[v] = fmaf(d * (x + v * xs + b)->d, (float)vaddvq_s32(si), acc[v]);
         }
     }
     for (int v = 0; v < nv; v++)
@@ -432,4 +403,12 @@ static NEON_DP void q6k_dotn_neon(const struct janas_block_q6k *w,
 #define C(N) q6k_dotn_neon_k(w, x, xs, N, nb, out)
     NEON_NV_SWITCH(C)
 #undef C
+}
+
+static NEON_DP float q6k_dot_neon(const struct janas_block_q6k *w,
+                                  const struct janas_block_q8k *x, size_t nb)
+{
+    float r;
+    q6k_dotn_neon_k(w, x, 0, 1, nb, &r);
+    return r;
 }

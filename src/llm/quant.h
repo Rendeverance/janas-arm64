@@ -287,6 +287,14 @@ uint16_t janas_fp32_to_fp16(float f);
 int janas_mxfp4_to_q8_0(const uint8_t *in, struct janas_block_q8_0 *out,
                         size_t n, size_t *tiny);
 
+/* GGUF's Q5_0 (an fp16 scale, the fifth bits of the 32 weights in four
+   bytes, their low four bits in sixteen) rewritten as Q8_0: each weight,
+   q - 16, is an integer in -16..15 and the scale is kept, so every product
+   is the same exactly. n blocks of JANAS_Q5_0_BLOCK bytes. */
+#define JANAS_Q5_0_BLOCK 22
+void janas_q5_0_to_q8_0(const uint8_t *in, struct janas_block_q8_0 *out,
+                        size_t n);
+
 /* Quantizes n floats (n multiple of JANAS_QK) into n / JANAS_QK blocks. */
 void janas_q8k_quantize(const float *x, struct janas_block_q8k *y, size_t n);
 

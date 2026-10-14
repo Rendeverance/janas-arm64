@@ -268,19 +268,8 @@ static void copy_q5_0(const struct tensor *t, uint64_t src, uint64_t n,
         if (pread(fd, buf, k, (off_t)(t->base + src + at)) != (ssize_t)k)
             die("%s", "unexpected end of the GGUF file");
         uint64_t nb = k / Q5_0_BLOCK;
-        struct janas_block_q8_0 *o = (struct janas_block_q8_0 *)obuf;
-        for (uint64_t b = 0; b < nb; b++) {
-            const uint8_t *q = (const uint8_t *)buf + b * Q5_0_BLOCK;
-            uint32_t qh = (uint32_t)q[2] | (uint32_t)q[3] << 8 |
-                          (uint32_t)q[4] << 16 | (uint32_t)q[5] << 24;
-            o[b].d = (uint16_t)(q[0] | q[1] << 8);
-            for (int i = 0; i < 16; i++) {
-                int lo = (q[6 + i] & 0x0f) | (int)((qh >> i) & 1) << 4;
-                int hi = (q[6 + i] >> 4) | (int)((qh >> (i + 16)) & 1) << 4;
-                o[b].qs[i] = (int8_t)(lo - 16);
-                o[b].qs[i + 16] = (int8_t)(hi - 16);
-            }
-        }
+        janas_q5_0_to_q8_0((const uint8_t *)buf,
+                           (struct janas_block_q8_0 *)obuf, nb);
         if (pwrite(out_fd, obuf, nb * Q8_0_BLOCK,
                    (off_t)(dst + at / Q5_0_BLOCK * Q8_0_BLOCK)) !=
             (ssize_t)(nb * Q8_0_BLOCK))

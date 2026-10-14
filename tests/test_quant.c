@@ -422,6 +422,43 @@ static void test_matvec_multi_b32(void)
     free(y);
 }
 
+/* Q5_0 into Q8_0 (gguf2jns's rewrite): a block made by hand, then random
+   blocks packed back from the Q8_0 they became, byte for byte. */
+static void test_q5_0_to_q8_0(void)
+{
+    enum { NB = 64 };
+    uint8_t in[NB * JANAS_Q5_0_BLOCK], back[JANAS_Q5_0_BLOCK];
+    struct janas_block_q8_0 out[NB];
+    memset(in, 0, JANAS_Q5_0_BLOCK);
+    in[0] = 0x00, in[1] = 0x3c; /* d = 1.0 */
+    in[2] = 0x01;               /* weight 0's fifth bit */
+    in[6] = 0xa3;               /* weight 0: 3 (+16), weight 16: 10 */
+    janas_q5_0_to_q8_0(in, out, 1);
+    CHECK(out[0].d == 0x3c00 && out[0].qs[0] == 3 && out[0].qs[16] == -6 &&
+              out[0].qs[1] == -16,
+          "q5_0 by hand: d %04x, %d %d %d", out[0].d, out[0].qs[0],
+          out[0].qs[16], out[0].qs[1]);
+    for (size_t i = 0; i < sizeof(in); i++)
+        in[i] = (uint8_t)rnd();
+    janas_q5_0_to_q8_0(in, out, NB);
+    int bad = 0;
+    for (int b = 0; b < NB; b++) {
+        memset(back, 0, sizeof(back));
+        back[0] = (uint8_t)out[b].d, back[1] = (uint8_t)(out[b].d >> 8);
+        uint32_t qh = 0;
+        for (int i = 0; i < 32; i++) {
+            int v = out[b].qs[i] + 16; /* 0..31 */
+            bad += v < 0 || v > 31;
+            qh |= (uint32_t)(v >> 4 & 1) << i;
+            back[6 + i % 16] |= (uint8_t)((v & 15) << (i < 16 ? 0 : 4));
+        }
+        for (int k = 0; k < 4; k++)
+            back[2 + k] = (uint8_t)(qh >> (8 * k));
+        bad += memcmp(back, in + b * JANAS_Q5_0_BLOCK, JANAS_Q5_0_BLOCK) != 0;
+    }
+    CHECK(bad == 0, "q5_0 -> q8_0: %d blocks do not pack back", bad);
+}
+
 /*
  * Q4_K quantization: round trip on Gaussian-like and heavy-tailed weights.
  * The error relative to the weights' spread must stay near what 4 bits with
@@ -1258,6 +1295,7 @@ int main(void)
     test_matvec_group();
     test_matvec_multi();
     test_matvec_multi_b32();
+    test_q5_0_to_q8_0();
     test_dot_multi();
     test_det();
     test_dot_q5k_q8_0();

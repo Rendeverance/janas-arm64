@@ -111,6 +111,23 @@ int janas_mxfp4_to_q8_0(const uint8_t *in, struct janas_block_q8_0 *out,
     return 0;
 }
 
+void janas_q5_0_to_q8_0(const uint8_t *in, struct janas_block_q8_0 *out,
+                        size_t n)
+{
+    for (size_t b = 0; b < n; b++) {
+        const uint8_t *q = in + b * JANAS_Q5_0_BLOCK;
+        uint32_t qh = (uint32_t)q[2] | (uint32_t)q[3] << 8 |
+                      (uint32_t)q[4] << 16 | (uint32_t)q[5] << 24;
+        out[b].d = (uint16_t)(q[0] | q[1] << 8);
+        for (int i = 0; i < 16; i++) {
+            int lo = (q[6 + i] & 0x0f) | (int)((qh >> i) & 1) << 4;
+            int hi = (q[6 + i] >> 4) | (int)((qh >> (i + 16)) & 1) << 4;
+            out[b].qs[i] = (int8_t)(lo - 16);
+            out[b].qs[i + 16] = (int8_t)(hi - 16);
+        }
+    }
+}
+
 #if defined(__x86_64__)
 static int use_avx2_fma; /* set by float_helpers_init, further down */
 #endif

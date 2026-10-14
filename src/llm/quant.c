@@ -1930,9 +1930,15 @@ void janas_dot_multi_rows(int type, const void *w, size_t row_bytes, size_t nr,
         }
     }
 #endif
-    if (v < nv) /* the vectors left: every row */
+    /* the vectors left, eight at a time across all the rows: their
+       activations stay in the cache while the rows go by, where row by row
+       all of them would be read again for each row (a block of 64 tokens
+       read 300 KB of activations per row of 1 KB) */
+    for (; v < nv; v += 8) {
+        size_t g = nv - v < 8 ? nv - v : 8;
         for (size_t i = 0; i < nr; i++)
             janas_dot_multi(type, wb + i * row_bytes, x + v * x_stride,
-                            x_stride, nv - v, nb, out + i + v * out_stride,
+                            x_stride, g, nb, out + i + v * out_stride,
                             out_stride);
+    }
 }

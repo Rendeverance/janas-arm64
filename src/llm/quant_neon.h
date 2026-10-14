@@ -11,20 +11,10 @@
  * for bit; tests/test_quant.c checks this.
  */
 #include <arm_neon.h>
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#elif defined(__linux__)
-#include <asm/hwcap.h>
-#include <sys/auxv.h>
-#endif
 
-#define NEON_DP __attribute__((target("dotprod")))
+/* "+feature", the spelling both GCC and Clang take for ARM64 */
+#define NEON_DP __attribute__((target("+dotprod")))
+#define NEON_MM __attribute__((target("+dotprod,+i8mm")))
 /* The batched kernels inlined once per count of vectors (1 to 8): with nv
    a constant their per-vector accumulators live in registers. */
 #define NEON_DOTN_K static inline __attribute__((always_inline)) NEON_DP
@@ -234,17 +224,6 @@ static NEON_DP float q5_1_dot_neon(const struct janas_block_q5_1 *w,
    scale, all in one int32 per block; then one fma per block, as the
    reference. */
 
-/* Whether the CPU has the dot-product instructions (SDOT/UDOT). */
-static int neon_has_dotprod(void)
-{
-#if defined(_WIN32)
-    return IsProcessorFeaturePresent(43 /* PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE */) != 0;
-#elif defined(__linux__)
-    return (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
-#else
-    return 0;
-#endif
-}
 
 /*
  * The same products against nv activation vectors at once (nv 1 to 8), as

@@ -6,6 +6,7 @@
 #include "quant.h"
 #include "vmath.h"
 #include "iq3s_grid.h"
+#include "common/sysinfo.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -1312,7 +1313,7 @@ __attribute__((constructor)) static void dot_kernels_init(void)
 #elif defined(__aarch64__)
     const char *k = getenv("JANAS_KERNELS"); /* ref: the scalar reference */
     kernels_ref = k && !strcmp(k, "ref");
-    if (neon_has_dotprod() && !kernels_ref) {
+    if (janas_cpu_arm_dotprod() && !kernels_ref) {
         dot6_impl = q6k_dot_neon;
         dot80_impl = q8_0_dot_neon;
         dotnl_impl = iq4nl_dot_neon;

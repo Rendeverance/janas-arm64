@@ -111,7 +111,8 @@ static float dot_bf16_neon(const uint16_t *w, const float *x, uint32_t n)
     uint32_t i = 0;
     for (; i + 8 <= n; i += 8) {
         uint16x8_t h = vld1q_u16(w + i);
-        float32x4_t w0 = vreinterpretq_f32_u32(vshll_n_u16(vget_low_u16(h), 16));
+        float32x4_t w0 =
+            vreinterpretq_f32_u32(vshll_n_u16(vget_low_u16(h), 16));
         float32x4_t w1 = vreinterpretq_f32_u32(vshll_high_n_u16(h, 16));
         a0 = vfmaq_f32(a0, w0, vld1q_f32(x + i));
         a1 = vfmaq_f32(a1, w1, vld1q_f32(x + i + 4));
@@ -131,7 +132,8 @@ static void dot4_bf16_neon(const uint16_t *w, const float *const x[4],
     uint32_t i = 0;
     for (; i + 8 <= n; i += 8) {
         uint16x8_t h = vld1q_u16(w + i);
-        float32x4_t w0 = vreinterpretq_f32_u32(vshll_n_u16(vget_low_u16(h), 16));
+        float32x4_t w0 =
+            vreinterpretq_f32_u32(vshll_n_u16(vget_low_u16(h), 16));
         float32x4_t w1 = vreinterpretq_f32_u32(vshll_high_n_u16(h, 16));
         for (int t = 0; t < 4; t++) {
             a0[t] = vfmaq_f32(a0[t], w0, vld1q_f32(x[t] + i));

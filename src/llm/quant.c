@@ -111,7 +111,9 @@ int janas_mxfp4_to_q8_0(const uint8_t *in, struct janas_block_q8_0 *out,
     return 0;
 }
 
+#if defined(__x86_64__)
 static int use_avx2_fma; /* set by float_helpers_init, further down */
+#endif
 
 /* The eight blocks of 32 (d32, qs32, bsums32) of one block, as the 256
    are made: det, the division-free scale of the _det variant */
@@ -327,7 +329,8 @@ static void q8_groups_neon(const float *x, int8_t *qs, int16_t *bsums,
         i1 = vminq_s32(vmaxq_s32(i1, lo), hi);
         i2 = vminq_s32(vmaxq_s32(i2, lo), hi);
         i3 = vminq_s32(vmaxq_s32(i3, lo), hi);
-        bsums[g] = (int16_t)vaddvq_s32(vaddq_s32(vaddq_s32(i0, i1), vaddq_s32(i2, i3)));
+        bsums[g] = (int16_t)vaddvq_s32(
+            vaddq_s32(vaddq_s32(i0, i1), vaddq_s32(i2, i3)));
         int16x8_t h0 = vcombine_s16(vmovn_s32(i0), vmovn_s32(i1));
         int16x8_t h1 = vcombine_s16(vmovn_s32(i2), vmovn_s32(i3));
         vst1q_s8(qs + g * 16, vcombine_s8(vmovn_s16(h0), vmovn_s16(h1)));
@@ -338,7 +341,8 @@ static void q8k_block_neon(const float *x, struct janas_block_q8k *y, float id,
                            int det)
 {
     q8_groups_neon(x, y->qs, y->bsums, JANAS_QK / 16, id);
-    vst1q_s16(y->bsums2, vpaddq_s16(vld1q_s16(y->bsums), vld1q_s16(y->bsums + 8)));
+    vst1q_s16(y->bsums2,
+              vpaddq_s16(vld1q_s16(y->bsums), vld1q_s16(y->bsums + 8)));
     for (int k = 0; k < 8; k++) {
         float amax = q8_amax_n(x + 32 * k, 32);
         float d = det ? amax * 0.007874015718698502f : amax / 127.0f;
@@ -356,7 +360,8 @@ static void q8k_quantize_neon(const float *x, struct janas_block_q8k *y,
         float d = det ? amax * 0.007874015718698502f : amax / 127.0f;
         y[b].d = d;
         q8k_block_neon(x, &y[b],
-                       d > 0.0f ? (det ? janas_recip_det(d) : 1.0f / d) : 0.0f, det);
+                       d > 0.0f ? (det ? janas_recip_det(d) : 1.0f / d) : 0.0f,
+                       det);
     }
 }
 #endif
@@ -1851,10 +1856,12 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
                 q6k_dotn_neon(w, xv, x_stride, g, nb, r);
                 break;
             case JANAS_Q4_K:
-                neon_kmin_dotn(w, sizeof(struct janas_block_q4k), 0, xv, x_stride, g, nb, r);
+                neon_kmin_dotn(w, sizeof(struct janas_block_q4k), 0, xv,
+                               x_stride, g, nb, r);
                 break;
             case JANAS_Q5_K:
-                neon_kmin_dotn(w, sizeof(struct janas_block_q5k), 1, xv, x_stride, g, nb, r);
+                neon_kmin_dotn(w, sizeof(struct janas_block_q5k), 1, xv,
+                               x_stride, g, nb, r);
                 break;
             case JANAS_Q3_K:
             case JANAS_IQ3_S:
@@ -1865,10 +1872,12 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
                 mxfp4_dotn_neon(w, xv, x_stride, g, nb, r);
                 break;
             case JANAS_Q4_1:
-                neon_dm_dotn(w, sizeof(struct janas_block_q4_1), 0, xv, x_stride, g, nb, r);
+                neon_dm_dotn(w, sizeof(struct janas_block_q4_1), 0, xv,
+                             x_stride, g, nb, r);
                 break;
             case JANAS_Q5_1:
-                neon_dm_dotn(w, sizeof(struct janas_block_q5_1), 1, xv, x_stride, g, nb, r);
+                neon_dm_dotn(w, sizeof(struct janas_block_q5_1), 1, xv,
+                             x_stride, g, nb, r);
                 break;
             default:
                 q8_0_dotn_neon(w, xv, x_stride, g, nb, r);
@@ -1883,10 +1892,9 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
         out[v * out_stride] = janas_dot(type, w, x + v * x_stride, nb);
 }
 
-void janas_dot_multi_rows(int type, const void *w, size_t row_bytes,
-                          size_t nr, const struct janas_block_q8k *x,
-                          size_t x_stride, size_t nv, size_t nb, float *out,
-                          size_t out_stride)
+void janas_dot_multi_rows(int type, const void *w, size_t row_bytes, size_t nr,
+                          const struct janas_block_q8k *x, size_t x_stride,
+                          size_t nv, size_t nb, float *out, size_t out_stride)
 {
     const char *wb = w;
     size_t v = 0;
@@ -1907,13 +1915,10 @@ void janas_dot_multi_rows(int type, const void *w, size_t row_bytes,
                 const void *r0 = wb + i * row_bytes;
                 const void *r1 = wb + (i + 1) * row_bytes;
                 float o[4];
-                if (type == JANAS_Q8_0)
-                    neon_mm_q8_0(r0, r1, a, b, xi, nb, o);
-                else
-                    neon_mm_nib(r0, r1, a, b, xi, nb,
-                                type == JANAS_Q4_0 ? janas_q4_0_values
-                                                   : janas_iq4_values,
-                                o);
+                neon_mm_nib(r0, r1, a, b, xi, nb,
+                            type == JANAS_Q4_0 ? janas_q4_0_values
+                                               : janas_iq4_values,
+                            o);
                 out[i + v * out_stride] = o[0];
                 out[i + (v + 1) * out_stride] = o[1];
                 out[i + 1 + v * out_stride] = o[2];

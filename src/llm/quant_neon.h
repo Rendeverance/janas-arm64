@@ -21,16 +21,32 @@
 #ifdef NEON_NO_SPEC
 #define NEON_NV_SWITCH(C) C(nv)
 #else
-#define NEON_NV_SWITCH(C)                                                \
-    switch (nv) {                                                        \
-    case 1: C(1); break;                                                 \
-    case 2: C(2); break;                                                 \
-    case 3: C(3); break;                                                 \
-    case 4: C(4); break;                                                 \
-    case 5: C(5); break;                                                 \
-    case 6: C(6); break;                                                 \
-    case 7: C(7); break;                                                 \
-    default: C(8); break;                                                \
+#define NEON_NV_SWITCH(C)                                                      \
+    switch (nv) {                                                              \
+    case 1:                                                                    \
+        C(1);                                                                  \
+        break;                                                                 \
+    case 2:                                                                    \
+        C(2);                                                                  \
+        break;                                                                 \
+    case 3:                                                                    \
+        C(3);                                                                  \
+        break;                                                                 \
+    case 4:                                                                    \
+        C(4);                                                                  \
+        break;                                                                 \
+    case 5:                                                                    \
+        C(5);                                                                  \
+        break;                                                                 \
+    case 6:                                                                    \
+        C(6);                                                                  \
+        break;                                                                 \
+    case 7:                                                                    \
+        C(7);                                                                  \
+        break;                                                                 \
+    default:                                                                   \
+        C(8);                                                                  \
+        break;                                                                 \
     }
 #endif
 
@@ -62,8 +78,7 @@ static inline int32x4_t neon_red4(int32x4_t a, int32x4_t b, int32x4_t c,
    scales of four blocks `stride` bytes apart (the scale first in each). */
 static inline float neon_h2f(uint16_t h)
 {
-    return vgetq_lane_f32(vcvt_f32_f16(vreinterpret_f16_u16(vdup_n_u16(h))),
-                          0);
+    return vgetq_lane_f32(vcvt_f32_f16(vreinterpret_f16_u16(vdup_n_u16(h))), 0);
 }
 
 static inline float32x4_t neon_h2f4(const void *p, size_t stride)
@@ -89,8 +104,9 @@ static inline NEON_DP void neon_nib_unpack(const uint8_t *q, int8x16_t levels,
    does: ((0 + 4) + (2 + 6)) + ((1 + 5) + (3 + 7)). */
 static inline float neon_sum8(float32x4_t a, float32x4_t b)
 {
-    float32x4_t s = vaddq_f32(a, b);                       /* 0+4 1+5 2+6 3+7 */
-    float32x2_t t = vadd_f32(vget_low_f32(s), vget_high_f32(s)); /* (0+4)+(2+6), (1+5)+(3+7) */
+    float32x4_t s = vaddq_f32(a, b); /* 0+4 1+5 2+6 3+7 */
+    float32x2_t t = vadd_f32(vget_low_f32(s),
+                             vget_high_f32(s)); /* (0+4)+(2+6), (1+5)+(3+7) */
     return vget_lane_f32(t, 0) + vget_lane_f32(t, 1);
 }
 
@@ -110,8 +126,8 @@ static NEON_DP float neon_nib_dot(const struct janas_block_iq4nl *w,
             neon_nib_unpack(wb[k].qs, levels, &w0, &w1);
             s[k] = neon_dot32v(w0, w1, x[b].qs32 + 32 * k);
         }
-        float32x4_t sc0 = vmulq_f32(neon_h2f4(&wb[0].d, sizeof(*wb)),
-                                    vld1q_f32(x[b].d32));
+        float32x4_t sc0 =
+            vmulq_f32(neon_h2f4(&wb[0].d, sizeof(*wb)), vld1q_f32(x[b].d32));
         float32x4_t sc1 = vmulq_f32(neon_h2f4(&wb[4].d, sizeof(*wb)),
                                     vld1q_f32(x[b].d32 + 4));
         acc0 = vfmaq_f32(acc0, sc0,
@@ -145,8 +161,8 @@ static NEON_DP float q8_0_dot_neon(const struct janas_block_q8_0 *w,
         for (int k = 0; k < 8; k++)
             s[k] = neon_dot32v(vld1q_s8(wb[k].qs), vld1q_s8(wb[k].qs + 16),
                                x[b].qs32 + 32 * k);
-        float32x4_t sc0 = vmulq_f32(neon_h2f4(&wb[0].d, sizeof(*wb)),
-                                    vld1q_f32(x[b].d32));
+        float32x4_t sc0 =
+            vmulq_f32(neon_h2f4(&wb[0].d, sizeof(*wb)), vld1q_f32(x[b].d32));
         float32x4_t sc1 = vmulq_f32(neon_h2f4(&wb[4].d, sizeof(*wb)),
                                     vld1q_f32(x[b].d32 + 4));
         acc0 = vfmaq_f32(acc0, sc0,
@@ -201,9 +217,11 @@ static NEON_DP float neon_dm_dot(const uint8_t *w, size_t size, int five,
             sm[k] = neon_h2f(m) * x[b].d32[k];
         }
         a0 = vfmaq_f32(a0, vld1q_f32(sc), vcvtq_f32_s32(vld1q_s32(dot)));
-        a1 = vfmaq_f32(a1, vld1q_f32(sc + 4), vcvtq_f32_s32(vld1q_s32(dot + 4)));
+        a1 =
+            vfmaq_f32(a1, vld1q_f32(sc + 4), vcvtq_f32_s32(vld1q_s32(dot + 4)));
         m0 = vfmaq_f32(m0, vld1q_f32(sm), vcvtq_f32_s32(vld1q_s32(asum)));
-        m1 = vfmaq_f32(m1, vld1q_f32(sm + 4), vcvtq_f32_s32(vld1q_s32(asum + 4)));
+        m1 = vfmaq_f32(m1, vld1q_f32(sm + 4),
+                       vcvtq_f32_s32(vld1q_s32(asum + 4)));
     }
     return neon_sum8(a0, a1) + neon_sum8(m0, m1);
 }
@@ -224,7 +242,6 @@ static NEON_DP float q5_1_dot_neon(const struct janas_block_q5_1 *w,
    scale, all in one int32 per block; then one fma per block, as the
    reference. */
 
-
 /*
  * The same products against nv activation vectors at once (nv 1 to 8), as
  * janas_dot_multi asks: each weight block is unpacked once and used for all
@@ -233,9 +250,9 @@ static NEON_DP float q5_1_dot_neon(const struct janas_block_q5_1 *w,
  * kernel's (and the reference's), bit for bit.
  */
 NEON_DOTN_K void neon_nib_dotn_k(const struct janas_block_iq4nl *w,
-                                  const struct janas_block_q8k *x,
-                                  size_t xs, int nv, size_t nb, float *out,
-                                  const int8_t *lv)
+                                 const struct janas_block_q8k *x, size_t xs,
+                                 int nv, size_t nb, float *out,
+                                 const int8_t *lv)
 {
     int8x16_t levels = vld1q_s8(lv);
     float32x4_t a0[8], a1[8];
@@ -270,18 +287,17 @@ NEON_DOTN_K void neon_nib_dotn_k(const struct janas_block_iq4nl *w,
 }
 
 static NEON_DP void neon_nib_dotn(const struct janas_block_iq4nl *w,
-                                  const struct janas_block_q8k *x,
-                                  size_t xs, int nv, size_t nb, float *out,
-                                  const int8_t *lv)
-{
+                                  const struct janas_block_q8k *x, size_t xs,
+                                  int nv, size_t nb, float *out,
+                                  const int8_t *lv){
 #define C(N) neon_nib_dotn_k(w, x, xs, N, nb, out, lv)
     NEON_NV_SWITCH(C)
 #undef C
 }
 
 NEON_DOTN_K void q8_0_dotn_neon_k(const struct janas_block_q8_0 *w,
-                                   const struct janas_block_q8k *x, size_t xs,
-                                   int nv, size_t nb, float *out)
+                                  const struct janas_block_q8k *x, size_t xs,
+                                  int nv, size_t nb, float *out)
 {
     float32x4_t a0[8], a1[8];
     for (int v = 0; v < nv; v++)
@@ -318,8 +334,7 @@ NEON_DOTN_K void q8_0_dotn_neon_k(const struct janas_block_q8_0 *w,
 
 static NEON_DP void q8_0_dotn_neon(const struct janas_block_q8_0 *w,
                                    const struct janas_block_q8k *x, size_t xs,
-                                   int nv, size_t nb, float *out)
-{
+                                   int nv, size_t nb, float *out){
 #define C(N) q8_0_dotn_neon_k(w, x, xs, N, nb, out)
     NEON_NV_SWITCH(C)
 #undef C
@@ -327,8 +342,8 @@ static NEON_DP void q8_0_dotn_neon(const struct janas_block_q8_0 *w,
 
 /* Q6_K: the 256 weights of a block unpacked once (as int8, q - 32). */
 NEON_DOTN_K void q6k_dotn_neon_k(const struct janas_block_q6k *w,
-                                  const struct janas_block_q8k *x, size_t xs,
-                                  int nv, size_t nb, float *out)
+                                 const struct janas_block_q8k *x, size_t xs,
+                                 int nv, size_t nb, float *out)
 {
     float acc[8] = {0};
     const uint8x16_t m4 = vdupq_n_u8(15), m2 = vdupq_n_u8(3);
@@ -339,25 +354,40 @@ NEON_DOTN_K void q6k_dotn_neon_k(const struct janas_block_q6k *w,
         for (int n = 0; n < 2; n++) {
             const uint8_t *ql = wb->ql + 64 * n, *qh = wb->qh + 32 * n;
             for (int h = 0; h < 2; h++) {
-                uint8x16_t l0 = vld1q_u8(ql + 16 * h), l1 = vld1q_u8(ql + 32 + 16 * h);
+                uint8x16_t l0 = vld1q_u8(ql + 16 * h),
+                           l1 = vld1q_u8(ql + 32 + 16 * h);
                 uint8x16_t hh = vld1q_u8(qh + 16 * h);
-                int base = 8 * n + h; /* v = 128n + 32p + 16h -> index 8n + 2p + h */
-                q[base + 0] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vandq_u8(l0, m4),
-                                  vshlq_n_u8(vandq_u8(hh, m2), 4))), c32);
-                q[base + 2] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vandq_u8(l1, m4),
-                                  vshlq_n_u8(vandq_u8(vshrq_n_u8(hh, 2), m2), 4))), c32);
-                q[base + 4] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(l0, 4),
-                                  vshlq_n_u8(vandq_u8(vshrq_n_u8(hh, 4), m2), 4))), c32);
-                q[base + 6] = vsubq_s8(vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(l1, 4),
-                                  vshlq_n_u8(vshrq_n_u8(hh, 6), 4))), c32);
+                int base =
+                    8 * n + h; /* v = 128n + 32p + 16h -> index 8n + 2p + h */
+                q[base + 0] = vsubq_s8(
+                    vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(l0, m4), vshlq_n_u8(vandq_u8(hh, m2), 4))),
+                    c32);
+                q[base + 2] = vsubq_s8(
+                    vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(l1, m4),
+                        vshlq_n_u8(vandq_u8(vshrq_n_u8(hh, 2), m2), 4))),
+                    c32);
+                q[base + 4] = vsubq_s8(
+                    vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(l0, 4),
+                        vshlq_n_u8(vandq_u8(vshrq_n_u8(hh, 4), m2), 4))),
+                    c32);
+                q[base + 6] = vsubq_s8(
+                    vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(l1, 4), vshlq_n_u8(vshrq_n_u8(hh, 6), 4))),
+                    c32);
             }
         }
         float d = neon_h2f(wb->d);
         /* the 16 group scales as four int32 vectors, once for all vectors */
         int8x16_t sc8 = vld1q_s8(wb->scales);
-        int16x8_t sl = vmovl_s8(vget_low_s8(sc8)), sh = vmovl_s8(vget_high_s8(sc8));
-        int32x4_t sv0 = vmovl_s16(vget_low_s16(sl)), sv1 = vmovl_s16(vget_high_s16(sl));
-        int32x4_t sv2 = vmovl_s16(vget_low_s16(sh)), sv3 = vmovl_s16(vget_high_s16(sh));
+        int16x8_t sl = vmovl_s8(vget_low_s8(sc8)),
+                  sh = vmovl_s8(vget_high_s8(sc8));
+        int32x4_t sv0 = vmovl_s16(vget_low_s16(sl)),
+                  sv1 = vmovl_s16(vget_high_s16(sl));
+        int32x4_t sv2 = vmovl_s16(vget_low_s16(sh)),
+                  sv3 = vmovl_s16(vget_high_s16(sh));
         for (int v = 0; v < nv; v++) {
             const int8_t *a = (x + v * xs + b)->qs;
             int32x4_t s[16];
@@ -368,7 +398,8 @@ NEON_DOTN_K void q6k_dotn_neon_k(const struct janas_block_q6k *w,
             si = vmlaq_s32(si, neon_red4(s[4], s[5], s[6], s[7]), sv1);
             si = vmlaq_s32(si, neon_red4(s[8], s[9], s[10], s[11]), sv2);
             si = vmlaq_s32(si, neon_red4(s[12], s[13], s[14], s[15]), sv3);
-            acc[v] = fmaf(d * (x + v * xs + b)->d, (float)vaddvq_s32(si), acc[v]);
+            acc[v] =
+                fmaf(d * (x + v * xs + b)->d, (float)vaddvq_s32(si), acc[v]);
         }
     }
     for (int v = 0; v < nv; v++)

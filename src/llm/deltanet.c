@@ -170,7 +170,6 @@ gdn_step_h_avx2(uint16_t *M, const float *q, const float *k, const float *v,
 }
 #endif
 
-
 #if defined(__aarch64__)
 #include <arm_neon.h>
 /*
@@ -255,8 +254,8 @@ static void gdn_step_h_neon(uint16_t *M, const float *q, const float *k,
             float32x4_t x0 = vfmaq_f32(vld1q_f32(r + i), vdl, vld1q_f32(k + i));
             float32x4_t x1 =
                 vfmaq_f32(vld1q_f32(r + i + 4), vdl, vld1q_f32(k + i + 4));
-            vst1q_u16(m + i, vreinterpretq_u16_f16(vcvt_high_f16_f32(
-                                 vcvt_f16_f32(x0), x1)));
+            vst1q_u16(m + i, vreinterpretq_u16_f16(
+                                 vcvt_high_f16_f32(vcvt_f16_f32(x0), x1)));
             a0 = vfmaq_f32(a0, x0, vld1q_f32(q + i));
             a1 = vfmaq_f32(a1, x1, vld1q_f32(q + i + 4));
         }
@@ -271,7 +270,10 @@ static void gdn_step_h_neon(uint16_t *M, const float *q, const float *k,
 }
 #endif
 
-static int use_avx2, use_f16c;
+static int use_avx2;
+#if defined(__x86_64__)
+static int use_f16c;
+#endif
 
 __attribute__((constructor)) static void gdn_init(void)
 {

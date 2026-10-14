@@ -162,7 +162,6 @@ __attribute__((target("avx2,fma"))) static inline float janas_hsum8(__m256 a)
 }
 #endif
 
-
 #if defined(__aarch64__)
 #include <arm_neon.h>
 /* janas_exp_det on 4 lanes: the same operations, the same order (fmaxnm/
@@ -181,7 +180,8 @@ static inline float32x4_t janas_exp4(float32x4_t x)
     y = vfmaq_f32(vdupq_n_f32(5.0000001201e-1f), y, r);
     y = vfmaq_f32(r, y, vmulq_f32(r, r));
     y = vaddq_f32(y, vdupq_n_f32(1.0f));
-    int32x4_t e = vshlq_n_s32(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(127)), 23);
+    int32x4_t e =
+        vshlq_n_s32(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(127)), 23);
     return vmulq_f32(y, vreinterpretq_f32_s32(e));
 }
 

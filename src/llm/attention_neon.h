@@ -15,8 +15,8 @@
 /* scores: int16 query, int8 keys, exact int32 sums */
 static void att_scores_i16_neon(const int16_t *const *q, const int8_t *K,
                                 const float *ks, uint32_t nt, uint32_t hd,
-                                const float *qsc, float scale,
-                                float *const *sc, int ns)
+                                const float *qsc, float scale, float *const *sc,
+                                int ns)
 {
     for (uint32_t t = 0; t < nt; t++) {
         const int8_t *k = K + (size_t)t * hd;
@@ -41,8 +41,7 @@ static void att_scores_i16_neon(const int16_t *const *q, const int8_t *K,
 /* scores: float query, int8 (kv16 = 0) or int16 (kv16 = 1) keys */
 static void att_scores_f32_neon(const float *const *q, const void *Kv,
                                 const float *ks, uint32_t nt, uint32_t hd,
-                                float scale, float *const *sc, int ns,
-                                int kv16)
+                                float scale, float *const *sc, int ns, int kv16)
 {
     for (uint32_t t = 0; t < nt; t++)
         for (int s = 0; s < ns; s++) {
@@ -91,9 +90,11 @@ static void att_values_f32_neon(const float *const *w, const void *Vv,
             for (uint32_t t = 0; t < nt; t++) {
                 int16x8_t vv =
                     kv16 ? vld1q_s16((const int16_t *)Vv + (size_t)t * hd + i)
-                         : vmovl_s8(vld1_s8((const int8_t *)Vv + (size_t)t * hd + i));
+                         : vmovl_s8(vld1_s8((const int8_t *)Vv +
+                                            (size_t)t * hd + i));
                 float32x4_t wt = vdupq_n_f32(w[s][t]);
-                a0 = vfmaq_f32(a0, wt, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vv))));
+                a0 = vfmaq_f32(a0, wt,
+                               vcvtq_f32_s32(vmovl_s16(vget_low_s16(vv))));
                 a1 = vfmaq_f32(a1, wt, vcvtq_f32_s32(vmovl_high_s16(vv)));
             }
             vst1q_f32(out[s] + i, a0);
@@ -102,8 +103,9 @@ static void att_values_f32_neon(const float *const *w, const void *Vv,
         for (; i < hd; i++) {
             float acc = 0.0f;
             for (uint32_t t = 0; t < nt; t++)
-                acc += w[s][t] * (kv16 ? (float)((const int16_t *)Vv)[(size_t)t * hd + i]
-                                       : (float)((const int8_t *)Vv)[(size_t)t * hd + i]);
+                acc += w[s][t] *
+                       (kv16 ? (float)((const int16_t *)Vv)[(size_t)t * hd + i]
+                             : (float)((const int8_t *)Vv)[(size_t)t * hd + i]);
             out[s][i] = acc;
         }
     }
@@ -115,7 +117,8 @@ static void att_values_i16_neon(const int32_t *const *wp, const float *wsc,
                                 float *const *out, int ns)
 {
     for (int s = 0; s < ns; s++) {
-        const int16_t *w = (const int16_t *)wp[s]; /* little-endian: t in order */
+        const int16_t *w =
+            (const int16_t *)wp[s]; /* little-endian: t in order */
         uint32_t i = 0;
         for (; i + 8 <= hd; i += 8) {
             int32x4_t a0 = vdupq_n_s32(0), a1 = vdupq_n_s32(0);
@@ -183,10 +186,14 @@ static float att_weights_neon(float *row, uint32_t nt, uint32_t vis, float *mx)
         uint32x4_t tt = vdupq_n_u32(t);
         float32x4_t d0 = vsubq_f32(vld1q_f32(row + t), vmx);
         float32x4_t d1 = vsubq_f32(vld1q_f32(row + t + 4), vmx);
-        uint32x4_t k0 = vandq_u32(vcgeq_f32(d0, lim), vcgtq_u32(vv, vaddq_u32(i0, tt)));
-        uint32x4_t k1 = vandq_u32(vcgeq_f32(d1, lim), vcgtq_u32(vv, vaddq_u32(i1, tt)));
-        float32x4_t w0 = vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(janas_exp4(d0)), k0));
-        float32x4_t w1 = vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(janas_exp4(d1)), k1));
+        uint32x4_t k0 =
+            vandq_u32(vcgeq_f32(d0, lim), vcgtq_u32(vv, vaddq_u32(i0, tt)));
+        uint32x4_t k1 =
+            vandq_u32(vcgeq_f32(d1, lim), vcgtq_u32(vv, vaddq_u32(i1, tt)));
+        float32x4_t w0 = vreinterpretq_f32_u32(
+            vandq_u32(vreinterpretq_u32_f32(janas_exp4(d0)), k0));
+        float32x4_t w1 = vreinterpretq_f32_u32(
+            vandq_u32(vreinterpretq_u32_f32(janas_exp4(d1)), k1));
         vst1q_f32(row + t, w0);
         vst1q_f32(row + t + 4, w1);
         acc0 = vaddq_f32(acc0, w0);

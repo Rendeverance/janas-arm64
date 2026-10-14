@@ -184,7 +184,8 @@ static float dot_f16_neon(const uint16_t *w, const float *x, uint32_t n)
         float16x8_t h1 = vreinterpretq_f16_u16(vld1q_u16(w + i + 8));
         a0 = vfmaq_f32(a0, vcvt_f32_f16(vget_low_f16(h0)), vld1q_f32(x + i));
         a1 = vfmaq_f32(a1, vcvt_high_f32_f16(h0), vld1q_f32(x + i + 4));
-        a2 = vfmaq_f32(a2, vcvt_f32_f16(vget_low_f16(h1)), vld1q_f32(x + i + 8));
+        a2 =
+            vfmaq_f32(a2, vcvt_f32_f16(vget_low_f16(h1)), vld1q_f32(x + i + 8));
         a3 = vfmaq_f32(a3, vcvt_high_f32_f16(h1), vld1q_f32(x + i + 12));
     }
     float s = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));

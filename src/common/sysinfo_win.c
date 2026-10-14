@@ -254,7 +254,8 @@ int janas_exe_path(char *buf, size_t len)
 int janas_cpu_arm_dotprod(void)
 {
 #if defined(__aarch64__)
-    return IsProcessorFeaturePresent(43 /* PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE */) != 0;
+    return IsProcessorFeaturePresent(
+               43 /* PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE */) != 0;
 #else
     return 0;
 #endif
@@ -263,14 +264,17 @@ int janas_cpu_arm_dotprod(void)
 int janas_cpu_arm_i8mm(void)
 {
 #if defined(__aarch64__)
-    if (IsProcessorFeaturePresent(66 /* PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE */))
+    if (IsProcessorFeaturePresent(
+            66 /* PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE */))
         return 1;
     /* Windows releases that predate the flag: ID_AA64ISAR1_EL1 as the
        registry keeps it (CP 4031), I8MM in bits 55-52 */
     uint64_t isar1 = 0;
     DWORD n = sizeof(isar1);
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                     "CP 4031", RRF_RT_REG_QWORD, NULL, &isar1, &n) != ERROR_SUCCESS)
+    if (RegGetValueA(HKEY_LOCAL_MACHINE,
+                     "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                     "CP 4031", RRF_RT_REG_QWORD, NULL, &isar1,
+                     &n) != ERROR_SUCCESS)
         return 0;
     return ((isar1 >> 52) & 15) != 0;
 #else
@@ -281,11 +285,14 @@ int janas_cpu_arm_i8mm(void)
 void janas_cpu_name(char *buf, size_t len)
 {
 #if !(defined(__x86_64__) || defined(__i386__))
-    /* ARM64 has no brand-string instruction: Windows keeps the name in the registry */
+    /* ARM64 has no brand-string instruction: Windows keeps the name in the
+     * registry */
     DWORD n = (DWORD)len;
     buf[0] = 0;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                     "ProcessorNameString", RRF_RT_REG_SZ, NULL, buf, &n) != ERROR_SUCCESS)
+    if (RegGetValueA(HKEY_LOCAL_MACHINE,
+                     "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                     "ProcessorNameString", RRF_RT_REG_SZ, NULL, buf,
+                     &n) != ERROR_SUCCESS)
         buf[0] = 0;
 #else
     /* the brand string, from the processor itself */

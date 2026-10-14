@@ -51,7 +51,7 @@
 #define COPY_CHUNK ((size_t)16 << 20)
 #define MAX_PARTS 256
 #define GGUF_MXFP4 39 /* ggml's type number */
-#define GGUF_Q5_0 6 /* ggml's type number */
+#define GGUF_Q5_0 6   /* ggml's type number */
 #define Q5_0_BLOCK 22 /* fp16 d, 4 bytes of high bits, 16 of low nibbles */
 #define MXFP4_BLOCK JANAS_MXFP4_BLOCK
 #define Q8_0_BLOCK sizeof(struct janas_block_q8_0)
@@ -400,7 +400,8 @@ int main(int argc, char **argv)
                 die("%s: rows of unequal size", key);
             if (t->t->type == GGUF_Q5_0)
                 die("%s: Q5_0 experts are not supported (rewrite the GGUF "
-                    "with another type for them)", key);
+                    "with another type for them)",
+                    key);
             uint64_t rb = per / t->t->dims[1];
             /* widened to a multiple of 256: the rows of gate and up, the
                row of down */

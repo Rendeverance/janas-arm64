@@ -410,8 +410,8 @@ static void test_matvec_multi_b32(void)
                     float ref = janas_dot(type, w + (size_t)r * rb,
                                           x + (size_t)v * NB, NB);
                     CHECK(y[v * ROWS + r] == ref,
-                          "type %d nv %d v %d row %d: %g vs %g", type, nv, v,
-                          r, y[v * ROWS + r], ref);
+                          "type %d nv %d v %d row %d: %g vs %g", type, nv, v, r,
+                          y[v * ROWS + r], ref);
                 }
         }
         free(w);
@@ -529,7 +529,8 @@ det8(const float *g, const float *u, float *h, int n)
 static void det4(const float *g, const float *u, float *h, int n)
 {
     for (int i = 0; i < n; i += 4)
-        vst1q_f32(h + i, janas_silu_mul_det4(vld1q_f32(g + i), vld1q_f32(u + i)));
+        vst1q_f32(h + i,
+                  janas_silu_mul_det4(vld1q_f32(g + i), vld1q_f32(u + i)));
 }
 #endif
 
@@ -876,7 +877,7 @@ static void test_dot_q4_0_q5_1(void)
                 janas_dot_multi(t, w, x, NB, (size_t)nv, NB, out, 1);
                 for (int v = 0; v < nv; v++) {
                     float r = five == 2 ? janas_q4_1_dot_ref(w1, x + v * NB, NB)
-                              : five    ? janas_q5_1_dot_ref(w5, x + v * NB, NB)
+                              : five ? janas_q5_1_dot_ref(w5, x + v * NB, NB)
                                      : janas_q4_0_dot_ref(w4, x + v * NB, NB);
                     CHECK(out[v] == r, "%s multi nv %d v %d: %g vs %g", name,
                           nv, v, out[v], r);

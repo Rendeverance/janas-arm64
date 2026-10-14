@@ -47,8 +47,8 @@ static NEON_DP void unpack_q5k(const struct janas_block_q5k *w, int8_t *q)
         uint8x16_t hb0 = vandq_u8(vshlq_u8(h1, r0), one);
         uint8x16_t ha1 = vandq_u8(vshlq_u8(h0, r1), one);
         uint8x16_t hb1 = vandq_u8(vshlq_u8(h1, r1), one);
-        vst1q_s8(q + 64 * j, vreinterpretq_s8_u8(
-                                 vorrq_u8(vandq_u8(a, m4), vshlq_n_u8(ha0, 4))));
+        vst1q_s8(q + 64 * j, vreinterpretq_s8_u8(vorrq_u8(vandq_u8(a, m4),
+                                                          vshlq_n_u8(ha0, 4))));
         vst1q_s8(q + 64 * j + 16, vreinterpretq_s8_u8(vorrq_u8(
                                       vandq_u8(b, m4), vshlq_n_u8(hb0, 4))));
         vst1q_s8(q + 64 * j + 32, vreinterpretq_s8_u8(vorrq_u8(
@@ -70,13 +70,15 @@ static NEON_DP void neon_kmin_dotn(const void *wv, size_t bsz, int five,
         uint16_t d, dmin;
         const uint8_t *scales;
         if (five) {
-            const struct janas_block_q5k *w = (const struct janas_block_q5k *)blk;
+            const struct janas_block_q5k *w =
+                (const struct janas_block_q5k *)blk;
             unpack_q5k(w, q);
             d = w->d;
             dmin = w->dmin;
             scales = w->scales;
         } else {
-            const struct janas_block_q4k *w = (const struct janas_block_q4k *)blk;
+            const struct janas_block_q4k *w =
+                (const struct janas_block_q4k *)blk;
             unpack_q4k(w, q);
             d = w->d;
             dmin = w->dmin;
@@ -112,7 +114,8 @@ static NEON_DP void neon_kgroup_dotn(int type, const void *wv,
         int ng, gs;
         uint16_t d;
         if (type == JANAS_Q3_K) {
-            const struct janas_block_q3k *w = (const struct janas_block_q3k *)wv + b;
+            const struct janas_block_q3k *w =
+                (const struct janas_block_q3k *)wv + b;
             int8_t sc[16];
             q3k_scales(w->scales, sc);
             for (int e = 0; e < JANAS_QK; e++)
@@ -123,7 +126,8 @@ static NEON_DP void neon_kgroup_dotn(int type, const void *wv,
             gs = 16;
             d = w->d;
         } else if (type == JANAS_IQ3_S) {
-            const struct janas_block_iq3s *w = (const struct janas_block_iq3s *)wv + b;
+            const struct janas_block_iq3s *w =
+                (const struct janas_block_iq3s *)wv + b;
             for (int g = 0; g < 8; g++) {
                 for (int e = 0; e < 32; e++)
                     q[32 * g + e] = (int8_t)iq3s_value(w, g, e);
@@ -133,7 +137,8 @@ static NEON_DP void neon_kgroup_dotn(int type, const void *wv,
             gs = 32;
             d = w->d;
         } else { /* IQ4_XS */
-            const struct janas_block_iq4xs *w = (const struct janas_block_iq4xs *)wv + b;
+            const struct janas_block_iq4xs *w =
+                (const struct janas_block_iq4xs *)wv + b;
             int8x16_t levels = vld1q_s8(janas_iq4_values);
             for (int g = 0; g < 8; g++) {
                 int8x16_t w0, w1;
@@ -184,7 +189,8 @@ static NEON_DP void mxfp4_dotn_neon(const struct janas_block_mxfp4 *w,
                 dot[k] = neon_dot32(w0[k], w1[k], xb->qs32 + 32 * k);
                 sc[k] = e[k] * xb->d32[k];
             }
-            a0[v] = vfmaq_f32(a0[v], vld1q_f32(sc), vcvtq_f32_s32(vld1q_s32(dot)));
+            a0[v] =
+                vfmaq_f32(a0[v], vld1q_f32(sc), vcvtq_f32_s32(vld1q_s32(dot)));
             a1[v] = vfmaq_f32(a1[v], vld1q_f32(sc + 4),
                               vcvtq_f32_s32(vld1q_s32(dot + 4)));
         }

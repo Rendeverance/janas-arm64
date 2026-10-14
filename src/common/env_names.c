@@ -11,7 +11,9 @@
 
 #include "common/words.h"
 
+#ifndef _WIN32 /* MinGW's stdlib.h declares it (a macro: Clang rejects this) */
 extern char **environ;
+#endif
 
 const char *const JANAS_ENV_NAMES[] = {"JANAS_ALPHAVANTAGE_KEY",
                                        "JANAS_API_KEY",

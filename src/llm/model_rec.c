@@ -146,7 +146,8 @@ static void l2_norm_neon(float *x, uint32_t n, float eps)
         a0 = vfmaq_f32(a0, v0, v0);
         a1 = vfmaq_f32(a1, v1, v1);
     }
-    float32x4_t inv = vdupq_n_f32(1.0f / sqrtf(vaddvq_f32(vaddq_f32(a0, a1)) + eps));
+    float32x4_t inv =
+        vdupq_n_f32(1.0f / sqrtf(vaddvq_f32(vaddq_f32(a0, a1)) + eps));
     for (uint32_t i = 0; i < n; i += 4)
         vst1q_f32(x + i, vmulq_f32(vld1q_f32(x + i), inv));
 }
@@ -274,7 +275,8 @@ static void gate_neon(float *o, const float *z, const float *w, uint32_t n,
     float32x4_t sc =
         vdupq_n_f32(1.0f / sqrtf(vaddvq_f32(vaddq_f32(a0, a1)) / n + eps));
     for (uint32_t i = 0; i < n; i += 4) {
-        float32x4_t v = vmulq_f32(vmulq_f32(vld1q_f32(o + i), sc), vld1q_f32(w + i));
+        float32x4_t v =
+            vmulq_f32(vmulq_f32(vld1q_f32(o + i), sc), vld1q_f32(w + i));
         vst1q_f32(o + i, vmulq_f32(v, janas_silu4(vld1q_f32(z + i))));
     }
 }

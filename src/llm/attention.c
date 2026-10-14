@@ -666,6 +666,9 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             srow[s] = sc + (size_t)sl * ATT_CHUNK;
         }
         const int8_t *pf = s0 ? NULL : V;
+#if !defined(__x86_64__)
+        (void)pf; /* the AVX2 kernels prefetch V with it */
+#endif
         if (A->kv16) {
 #if defined(__x86_64__)
             if (avx)
@@ -675,7 +678,8 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             else
 #elif defined(__aarch64__)
             if (neon)
-                att_scores_f32_neon(qf, K, ks, nt, hd, scale, srow, (int)step, 1);
+                att_scores_f32_neon(qf, K, ks, nt, hd, scale, srow, (int)step,
+                                    1);
             else
 #endif
                 att_scores_f32_ref16(qf, (const int16_t *)K, ks, nt, hd, scale,
@@ -691,7 +695,8 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             else
 #elif defined(__aarch64__)
             if (neon)
-                att_scores_i16_neon(qi, K, ks, nt, hd, qsc, scale, srow, (int)step);
+                att_scores_i16_neon(qi, K, ks, nt, hd, qsc, scale, srow,
+                                    (int)step);
             else
 #endif
                 att_scores_i16_ref(qi, K, ks, nt, hd, qsc, scale, srow,
@@ -704,7 +709,8 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             else
 #elif defined(__aarch64__)
             if (neon)
-                att_scores_f32_neon(qf, K, ks, nt, hd, scale, srow, (int)step, 0);
+                att_scores_f32_neon(qf, K, ks, nt, hd, scale, srow, (int)step,
+                                    0);
             else
 #endif
                 att_scores_f32_ref(qf, K, ks, nt, hd, scale, srow, (int)step);

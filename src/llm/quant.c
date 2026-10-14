@@ -1264,6 +1264,9 @@ static dotn6p_fn dot6p_impl; /* NULL: the scalar reference */
 static const char *dot_name = "ref";
 static int use_vnni;
 
+/* JANAS_KERNELS=ref, read once in dot_kernels_init (janas_kernels_ref). */
+static int kernels_ref;
+
 /* Resolved before main: the kernels are first called from pool threads. */
 __attribute__((constructor)) static void dot_kernels_init(void)
 {
@@ -1308,7 +1311,8 @@ __attribute__((constructor)) static void dot_kernels_init(void)
     }
 #elif defined(__aarch64__)
     const char *k = getenv("JANAS_KERNELS"); /* ref: the scalar reference */
-    if (neon_has_dotprod() && !(k && !strcmp(k, "ref"))) {
+    kernels_ref = k && !strcmp(k, "ref");
+    if (neon_has_dotprod() && !kernels_ref) {
         dot6_impl = q6k_dot_neon;
         dot80_impl = q8_0_dot_neon;
         dotnl_impl = iq4nl_dot_neon;
@@ -1327,15 +1331,10 @@ __attribute__((constructor)) static void dot_kernels_init(void)
 }
 
 /* JANAS_KERNELS=ref: every kernel's scalar reference (the ARM64 build's
-   float kernels look here; quant.c's own pick is made in dot_kernels_init). */
+   float kernels look here). Set before main, so pool threads only read it. */
 int janas_kernels_ref(void)
 {
-    static int ref = -1;
-    if (ref < 0) {
-        const char *k = getenv("JANAS_KERNELS");
-        ref = k && !strcmp(k, "ref");
-    }
-    return ref;
+    return kernels_ref;
 }
 
 int janas_use_vnni(void)

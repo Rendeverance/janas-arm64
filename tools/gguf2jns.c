@@ -398,6 +398,9 @@ int main(int argc, char **argv)
             uint64_t cols = t->t->dims[0];
             if (per % t->t->dims[1])
                 die("%s: rows of unequal size", key);
+            if (t->t->type == GGUF_Q5_0)
+                die("%s: Q5_0 experts are not supported (rewrite the GGUF "
+                    "with another type for them)", key);
             uint64_t rb = per / t->t->dims[1];
             /* widened to a multiple of 256: the rows of gate and up, the
                row of down */
@@ -456,7 +459,10 @@ int main(int argc, char **argv)
         t->new_dims[1] = t->t->dims[1];
         t->new_type = t->t->type;
         if (t->t->type == GGUF_Q5_0) {
-            if (t->t->bytes % Q5_0_BLOCK || t->t->dims[0] % 32)
+            if (t->t->bytes % Q5_0_BLOCK || t->t->dims[0] % 32 ||
+                (t->t->n_dims == 2 && (gu || dn) &&
+                 (wide(t->t->dims[0]) != t->t->dims[0] ||
+                  wide(t->t->dims[1]) != t->t->dims[1])))
                 die("%s: a Q5_0 tensor this converter cannot rewrite", name);
             t->new_type = JANAS_Q8_0;
             t->new_bytes = t->t->bytes / Q5_0_BLOCK * Q8_0_BLOCK;

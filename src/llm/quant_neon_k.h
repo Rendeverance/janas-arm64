@@ -84,7 +84,7 @@ static NEON_DP void neon_kmin_dotn(const void *wv, size_t bsz, int five,
         }
         uint8_t sc[8], m[8];
         unpack_scales(scales, sc, m);
-        float fd = janas_fp16_to_fp32(d), fm = janas_fp16_to_fp32(dmin);
+        float fd = neon_h2f(d), fm = neon_h2f(dmin);
         for (int v = 0; v < nv; v++) {
             const struct janas_block_q8k *xb = x + v * xs + b;
             int32_t sumi = 0, summ = 0;
@@ -146,7 +146,7 @@ static NEON_DP void neon_kgroup_dotn(int type, const void *wv,
             gs = 32;
             d = w->d;
         }
-        float fd = janas_fp16_to_fp32(d);
+        float fd = neon_h2f(d);
         for (int v = 0; v < nv; v++) {
             const struct janas_block_q8k *xb = x + v * xs + b;
             int32_t sumi = 0;

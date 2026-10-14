@@ -170,6 +170,107 @@ gdn_step_h_avx2(uint16_t *M, const float *q, const float *k, const float *v,
 }
 #endif
 
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+/*
+ * ARM64: the AVX2 kernels' structure, four lanes per register and two
+ * accumulators per pass (so 8 floats in flight, as AVX2's one register).
+ */
+static void gdn_step_neon(float *M, const float *q, const float *k,
+                          const float *v, float decay, float beta, float scale,
+                          float *o, size_t dim, size_t rows)
+{
+    float32x4_t vd = vdupq_n_f32(decay);
+    for (size_t j = 0; j < rows; j++) {
+        float *r = M + j * dim;
+        float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+        size_t i = 0;
+        for (; i + 8 <= dim; i += 8) {
+            float32x4_t x0 = vmulq_f32(vld1q_f32(r + i), vd);
+            float32x4_t x1 = vmulq_f32(vld1q_f32(r + i + 4), vd);
+            vst1q_f32(r + i, x0);
+            vst1q_f32(r + i + 4, x1);
+            a0 = vfmaq_f32(a0, x0, vld1q_f32(k + i));
+            a1 = vfmaq_f32(a1, x1, vld1q_f32(k + i + 4));
+        }
+        float sk = vaddvq_f32(vaddq_f32(a0, a1));
+        for (; i < dim; i++) {
+            r[i] *= decay;
+            sk += r[i] * k[i];
+        }
+        float d = (v[j] - sk) * beta;
+        float32x4_t vdl = vdupq_n_f32(d);
+        a0 = vdupq_n_f32(0.0f);
+        a1 = vdupq_n_f32(0.0f);
+        for (i = 0; i + 8 <= dim; i += 8) {
+            float32x4_t x0 = vfmaq_f32(vld1q_f32(r + i), vdl, vld1q_f32(k + i));
+            float32x4_t x1 =
+                vfmaq_f32(vld1q_f32(r + i + 4), vdl, vld1q_f32(k + i + 4));
+            vst1q_f32(r + i, x0);
+            vst1q_f32(r + i + 4, x1);
+            a0 = vfmaq_f32(a0, x0, vld1q_f32(q + i));
+            a1 = vfmaq_f32(a1, x1, vld1q_f32(q + i + 4));
+        }
+        float sq = vaddvq_f32(vaddq_f32(a0, a1));
+        for (; i < dim; i++) {
+            r[i] += d * k[i];
+            sq += r[i] * q[i];
+        }
+        o[j] = sq * scale;
+    }
+}
+
+/* The state in fp16: NEON converts both ways in hardware (round to nearest
+   even, as F16C and janas_fp32_to_fp16). */
+static void gdn_step_h_neon(uint16_t *M, const float *q, const float *k,
+                            const float *v, float decay, float beta,
+                            float scale, float *o, size_t dim, size_t rows)
+{
+    float r[256];
+    float32x4_t vd = vdupq_n_f32(decay);
+    for (size_t j = 0; j < rows; j++) {
+        uint16_t *m = M + j * dim;
+        float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+        size_t i = 0;
+        for (; i + 8 <= dim; i += 8) {
+            float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(m + i));
+            float32x4_t x0 = vmulq_f32(vcvt_f32_f16(vget_low_f16(h)), vd);
+            float32x4_t x1 = vmulq_f32(vcvt_high_f32_f16(h), vd);
+            vst1q_f32(r + i, x0);
+            vst1q_f32(r + i + 4, x1);
+            a0 = vfmaq_f32(a0, x0, vld1q_f32(k + i));
+            a1 = vfmaq_f32(a1, x1, vld1q_f32(k + i + 4));
+        }
+        float sk = vaddvq_f32(vaddq_f32(a0, a1));
+        for (; i < dim; i++) {
+            r[i] = janas_fp16_to_fp32(m[i]) * decay;
+            sk += r[i] * k[i];
+        }
+        float d = (v[j] - sk) * beta;
+        float32x4_t vdl = vdupq_n_f32(d);
+        a0 = vdupq_n_f32(0.0f);
+        a1 = vdupq_n_f32(0.0f);
+        for (i = 0; i + 8 <= dim; i += 8) {
+            float32x4_t x0 = vfmaq_f32(vld1q_f32(r + i), vdl, vld1q_f32(k + i));
+            float32x4_t x1 =
+                vfmaq_f32(vld1q_f32(r + i + 4), vdl, vld1q_f32(k + i + 4));
+            vst1q_u16(m + i, vreinterpretq_u16_f16(vcvt_high_f16_f32(
+                                 vcvt_f16_f32(x0), x1)));
+            a0 = vfmaq_f32(a0, x0, vld1q_f32(q + i));
+            a1 = vfmaq_f32(a1, x1, vld1q_f32(q + i + 4));
+        }
+        float sq = vaddvq_f32(vaddq_f32(a0, a1));
+        for (; i < dim; i++) {
+            r[i] += d * k[i];
+            sq += r[i] * q[i];
+            m[i] = janas_fp32_to_fp16(r[i]);
+        }
+        o[j] = sq * scale;
+    }
+}
+#endif
+
 static int use_avx2, use_f16c;
 
 __attribute__((constructor)) static void gdn_init(void)
@@ -185,6 +286,12 @@ void janas_gdn_step(float *M, const float *q, const float *k, const float *v,
                     float decay, float beta, float scale, float *o, size_t dim,
                     size_t rows)
 {
+#if defined(__aarch64__)
+    if (!janas_kernels_ref()) {
+        gdn_step_neon(M, q, k, v, decay, beta, scale, o, dim, rows);
+        return;
+    }
+#endif
 #if defined(__x86_64__)
     if (use_avx2) {
         gdn_step_avx2(M, q, k, v, decay, beta, scale, o, dim, rows);
@@ -198,6 +305,12 @@ void janas_gdn_step_h(uint16_t *M, const float *q, const float *k,
                       const float *v, float decay, float beta, float scale,
                       float *o, size_t dim, size_t rows)
 {
+#if defined(__aarch64__)
+    if (!janas_kernels_ref()) {
+        gdn_step_h_neon(M, q, k, v, decay, beta, scale, o, dim, rows);
+        return;
+    }
+#endif
 #if defined(__x86_64__)
     if (use_avx2 && use_f16c) {
         gdn_step_h_avx2(M, q, k, v, decay, beta, scale, o, dim, rows);
@@ -209,5 +322,8 @@ void janas_gdn_step_h(uint16_t *M, const float *q, const float *k,
 
 const char *janas_gdn_kernel_name(void)
 {
+#if defined(__aarch64__)
+    return janas_kernels_ref() ? "ref" : "neon";
+#endif
     return use_avx2 ? "avx2" : "ref";
 }

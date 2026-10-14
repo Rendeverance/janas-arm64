@@ -542,6 +542,10 @@ static AVX2 void att_values_avx2_16(const float *const *w, const int16_t *V,
  * the same token in a larger block only has more zeros, which change neither
  * the largest score nor, lane by lane, the sum.
  */
+#if defined(__aarch64__)
+#include "attention_neon.h"
+#endif
+
 static float att_weights_ref(float *row, uint32_t nt, uint32_t vis, float *mx)
 {
     float m = -INFINITY, sum[8] = {0};
@@ -611,6 +615,9 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
     (void)avx;
     (void)vnni;
 #endif
+#if defined(__aarch64__)
+    const int neon = !janas_kernels_ref();
+#endif
     uint32_t sub = it % a->split, c = a->c0 + it / a->split % span;
     uint32_t kvh = it / a->split / span, g0 = sub * gs;
     uint32_t t0 = c * ATT_CHUNK, t1 = t0 + ATT_CHUNK;
@@ -666,6 +673,10 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
                                        scale, srow, (const int16_t *)pf,
                                        (int)step);
             else
+#elif defined(__aarch64__)
+            if (neon)
+                att_scores_f32_neon(qf, K, ks, nt, hd, scale, srow, (int)step, 1);
+            else
 #endif
                 att_scores_f32_ref16(qf, (const int16_t *)K, ks, nt, hd, scale,
                                      srow, (int)step);
@@ -678,6 +689,10 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
                 att_scores_i16_avx2(qi, K, ks, nt, hd, qsc, scale, srow, pf,
                                     (int)step);
             else
+#elif defined(__aarch64__)
+            if (neon)
+                att_scores_i16_neon(qi, K, ks, nt, hd, qsc, scale, srow, (int)step);
+            else
 #endif
                 att_scores_i16_ref(qi, K, ks, nt, hd, qsc, scale, srow,
                                    (int)step);
@@ -686,6 +701,10 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             if (avx)
                 att_scores_f32_avx2(qf, K, ks, nt, hd, scale, srow, pf,
                                     (int)step);
+            else
+#elif defined(__aarch64__)
+            if (neon)
+                att_scores_f32_neon(qf, K, ks, nt, hd, scale, srow, (int)step, 0);
             else
 #endif
                 att_scores_f32_ref(qf, K, ks, nt, hd, scale, srow, (int)step);
@@ -715,6 +734,11 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             pm[1] = att_weights_avx2(sc + (size_t)sl * ATT_CHUNK, nt,
                                      vis < nt ? vis : nt, pm);
         else
+#elif defined(__aarch64__)
+        if (neon)
+            pm[1] = att_weights_neon(sc + (size_t)sl * ATT_CHUNK, nt,
+                                     vis < nt ? vis : nt, pm);
+        else
 #endif
             pm[1] = att_weights_ref(sc + (size_t)sl * ATT_CHUNK, nt,
                                     vis < nt ? vis : nt, pm);
@@ -728,6 +752,10 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
 #if defined(__x86_64__)
             if (avx)
                 att_wquant_avx2(row, nt);
+            else
+#elif defined(__aarch64__)
+            if (neon)
+                att_wquant_neon(row, nt);
             else
 #endif
                 att_wquant_ref(row, nt);
@@ -752,6 +780,10 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             else if (avx)
                 att_values_i16_avx2(wp, wsc, V, nt, hd, out, (int)step);
             else
+#elif defined(__aarch64__)
+            if (neon)
+                att_values_i16_neon(wp, wsc, V, nt, hd, out, (int)step);
+            else
 #endif
                 att_values_i16_ref(wp, wsc, V, nt, hd, out, (int)step);
             continue;
@@ -761,6 +793,10 @@ static void attn_item(struct attn_job *a, uint32_t it, float *sc, int avx,
             att_values_avx2_16(w, (const int16_t *)V, nt, hd, out, (int)step);
         else if (avx)
             att_values_avx2(w, V, nt, hd, out, (int)step);
+        else
+#elif defined(__aarch64__)
+        if (neon)
+            att_values_f32_neon(w, V, nt, hd, out, (int)step, A->kv16);
         else
 #endif
             if (A->kv16)

@@ -112,6 +112,11 @@ static void act_worker(void *arg, int tid, int n_threads)
 #if defined(__x86_64__)
             if (m->avx2)
                 r = gelu_mul_avx2(gt, u, h, ff);
+#elif defined(__aarch64__)
+            if (!janas_kernels_ref())
+                for (; r + 4 <= ff; r += 4)
+                    vst1q_f32(h + r, janas_gelu_mul_det4(vld1q_f32(gt + r),
+                                                         vld1q_f32(u + r)));
 #endif
             for (; r < ff; r++)
                 h[r] = janas_gelu_mul_det(gt[r], u[r]);
@@ -119,6 +124,11 @@ static void act_worker(void *arg, int tid, int n_threads)
 #if defined(__x86_64__)
             if (m->avx2)
                 r = silu_mul_avx2(gt, u, h, ff);
+#elif defined(__aarch64__)
+            if (!janas_kernels_ref())
+                for (; r + 4 <= ff; r += 4)
+                    vst1q_f32(h + r, janas_silu_mul_det4(vld1q_f32(gt + r),
+                                                         vld1q_f32(u + r)));
 #endif
             for (; r < ff; r++)
                 h[r] = janas_silu_mul_det(gt[r], u[r]);
@@ -164,6 +174,26 @@ dot_f16_avx2(const uint16_t *w, const float *x, uint32_t n)
 }
 #endif
 
+#if defined(__aarch64__)
+static float dot_f16_neon(const uint16_t *w, const float *x, uint32_t n)
+{
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
+    uint32_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        float16x8_t h0 = vreinterpretq_f16_u16(vld1q_u16(w + i));
+        float16x8_t h1 = vreinterpretq_f16_u16(vld1q_u16(w + i + 8));
+        a0 = vfmaq_f32(a0, vcvt_f32_f16(vget_low_f16(h0)), vld1q_f32(x + i));
+        a1 = vfmaq_f32(a1, vcvt_high_f32_f16(h0), vld1q_f32(x + i + 4));
+        a2 = vfmaq_f32(a2, vcvt_f32_f16(vget_low_f16(h1)), vld1q_f32(x + i + 8));
+        a3 = vfmaq_f32(a3, vcvt_high_f32_f16(h1), vld1q_f32(x + i + 12));
+    }
+    float s = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
+    for (; i < n; i++)
+        s += janas_fp16_to_fp32(w[i]) * x[i];
+    return s;
+}
+#endif
+
 static void router_worker(void *arg, int tid, int n_threads)
 {
     struct router_job *r = arg;
@@ -176,6 +206,11 @@ static void router_worker(void *arg, int tid, int n_threads)
 #if defined(__x86_64__)
             if (m->avx2 && m->f16c) {
                 m->router[(size_t)j * ne + e] = dot_f16_avx2(w, x, dm);
+                continue;
+            }
+#elif defined(__aarch64__)
+            if (!janas_kernels_ref()) {
+                m->router[(size_t)j * ne + e] = dot_f16_neon(w, x, dm);
                 continue;
             }
 #endif

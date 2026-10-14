@@ -162,4 +162,66 @@ __attribute__((target("avx2,fma"))) static inline float janas_hsum8(__m256 a)
 }
 #endif
 
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+/* janas_exp_det on 4 lanes: the same operations, the same order (fmaxnm/
+   fminnm are fmaxf/fminf, round-to-nearest-even is nearbyintf). */
+static inline float32x4_t janas_exp4(float32x4_t x)
+{
+    x = vminnmq_f32(vmaxnmq_f32(x, vdupq_n_f32(-88.0f)), vdupq_n_f32(88.0f));
+    float32x4_t n = vrndnq_f32(vmulq_f32(x, vdupq_n_f32(1.44269504088896341f)));
+    float32x4_t r = vfmsq_f32(x, n, vdupq_n_f32(0.693359375f));
+    r = vfmsq_f32(r, n, vdupq_n_f32(-2.12194440e-4f));
+    float32x4_t y = vdupq_n_f32(1.9875691500e-4f);
+    y = vfmaq_f32(vdupq_n_f32(1.3981999507e-3f), y, r);
+    y = vfmaq_f32(vdupq_n_f32(8.3334519073e-3f), y, r);
+    y = vfmaq_f32(vdupq_n_f32(4.1665795894e-2f), y, r);
+    y = vfmaq_f32(vdupq_n_f32(1.6666665459e-1f), y, r);
+    y = vfmaq_f32(vdupq_n_f32(5.0000001201e-1f), y, r);
+    y = vfmaq_f32(r, y, vmulq_f32(r, r));
+    y = vaddq_f32(y, vdupq_n_f32(1.0f));
+    int32x4_t e = vshlq_n_s32(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(127)), 23);
+    return vmulq_f32(y, vreinterpretq_f32_s32(e));
+}
+
+/* x / (1 + e^-x) on 4 lanes, as janas_silu8 (a real division). */
+static inline float32x4_t janas_silu4(float32x4_t x)
+{
+    float32x4_t e = janas_exp4(vnegq_f32(x));
+    return vdivq_f32(x, vaddq_f32(vdupq_n_f32(1.0f), e));
+}
+
+/* janas_recip_det on 4 lanes. */
+static inline float32x4_t janas_recip4(float32x4_t d)
+{
+    float32x4_t y = vreinterpretq_f32_u32(
+        vsubq_u32(vdupq_n_u32(0x7EF311C3u), vreinterpretq_u32_f32(d)));
+    for (int i = 0; i < 3; i++)
+        y = vfmaq_f32(y, y, vfmsq_f32(vdupq_n_f32(1.0f), d, y));
+    return y;
+}
+
+/* janas_silu_mul_det on 4 lanes: the same operations, the same order. */
+static inline float32x4_t janas_silu_mul_det4(float32x4_t g, float32x4_t u)
+{
+    float32x4_t a = vminnmq_f32(vmaxnmq_f32(vnegq_f32(g), vdupq_n_f32(-88.0f)),
+                                vdupq_n_f32(30.0f));
+    float32x4_t d = vaddq_f32(vdupq_n_f32(1.0f), janas_exp4(a));
+    return vmulq_f32(vmulq_f32(g, janas_recip4(d)), u);
+}
+
+/* janas_gelu_mul_det on 4 lanes: the same operations, the same order. */
+static inline float32x4_t janas_gelu_mul_det4(float32x4_t g, float32x4_t u)
+{
+    float32x4_t z2 = vmulq_f32(
+        vdupq_n_f32(1.5957691216057308f),
+        vfmaq_f32(g, vmulq_f32(vdupq_n_f32(0.044715f), g), vmulq_f32(g, g)));
+    float32x4_t a = vminnmq_f32(vmaxnmq_f32(vnegq_f32(z2), vdupq_n_f32(-88.0f)),
+                                vdupq_n_f32(30.0f));
+    float32x4_t d = vaddq_f32(vdupq_n_f32(1.0f), janas_exp4(a));
+    return vmulq_f32(vmulq_f32(g, janas_recip4(d)), u);
+}
+#endif
+
 #endif

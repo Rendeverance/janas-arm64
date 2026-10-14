@@ -51,6 +51,8 @@
 #define COPY_CHUNK ((size_t)16 << 20)
 #define MAX_PARTS 256
 #define GGUF_MXFP4 39 /* ggml's type number */
+#define GGUF_Q5_0 6 /* ggml's type number */
+#define Q5_0_BLOCK 22 /* fp16 d, 4 bytes of high bits, 16 of low nibbles */
 #define MXFP4_BLOCK JANAS_MXFP4_BLOCK
 #define Q8_0_BLOCK sizeof(struct janas_block_q8_0)
 
@@ -254,6 +256,39 @@ static void copy_mxfp4(const struct tensor *t, uint64_t src, uint64_t n,
     }
 }
 
+/* n bytes of Q5_0 at src of t, to dst as Q8_0: exact, the block's scale is
+   kept and each weight's integer, -16 to 15, fits an int8. */
+static void copy_q5_0(const struct tensor *t, uint64_t src, uint64_t n,
+                      uint64_t dst)
+{
+    int fd = parts[t->part].fd;
+    uint64_t per = COPY_CHUNK / Q5_0_BLOCK * Q5_0_BLOCK;
+    for (uint64_t at = 0; at < n; at += per) {
+        uint64_t k = n - at < per ? n - at : per;
+        if (pread(fd, buf, k, (off_t)(t->base + src + at)) != (ssize_t)k)
+            die("%s", "unexpected end of the GGUF file");
+        uint64_t nb = k / Q5_0_BLOCK;
+        struct janas_block_q8_0 *o = (struct janas_block_q8_0 *)obuf;
+        for (uint64_t b = 0; b < nb; b++) {
+            const uint8_t *q = (const uint8_t *)buf + b * Q5_0_BLOCK;
+            uint32_t qh = (uint32_t)q[2] | (uint32_t)q[3] << 8 |
+                          (uint32_t)q[4] << 16 | (uint32_t)q[5] << 24;
+            o[b].d = (uint16_t)(q[0] | q[1] << 8);
+            for (int i = 0; i < 16; i++) {
+                int lo = (q[6 + i] & 0x0f) | (int)((qh >> i) & 1) << 4;
+                int hi = (q[6 + i] >> 4) | (int)((qh >> (i + 16)) & 1) << 4;
+                o[b].qs[i] = (int8_t)(lo - 16);
+                o[b].qs[i + 16] = (int8_t)(hi - 16);
+            }
+        }
+        if (pwrite(out_fd, obuf, nb * Q8_0_BLOCK,
+                   (off_t)(dst + at / Q5_0_BLOCK * Q8_0_BLOCK)) !=
+            (ssize_t)(nb * Q8_0_BLOCK))
+            die("write failed: %s", strerror(errno));
+        copied += k;
+    }
+}
+
 /* A width rounded up to a multiple of 256 (the engine's activations). */
 static uint64_t wide(uint64_t n)
 {
@@ -420,6 +455,14 @@ int main(int argc, char **argv)
         t->new_dims[0] = t->t->dims[0];
         t->new_dims[1] = t->t->dims[1];
         t->new_type = t->t->type;
+        if (t->t->type == GGUF_Q5_0) {
+            if (t->t->bytes % Q5_0_BLOCK || t->t->dims[0] % 32)
+                die("%s: a Q5_0 tensor this converter cannot rewrite", name);
+            t->new_type = JANAS_Q8_0;
+            t->new_bytes = t->t->bytes / Q5_0_BLOCK * Q8_0_BLOCK;
+            free(name);
+            continue;
+        }
         if (t->t->type == GGUF_MXFP4) {
             if (t->t->bytes % MXFP4_BLOCK || t->t->dims[0] % 32 ||
                 (t->t->n_dims == 2 && (gu || dn) &&
@@ -499,7 +542,9 @@ int main(int argc, char **argv)
 
     for (size_t i = 0; i < n_res; i++) {
         const struct tensor *t = resident[i];
-        if (t->new_type != t->t->type)
+        if (t->new_type != t->t->type && t->t->type == GGUF_Q5_0)
+            copy_q5_0(t, t->t->offset, t->t->bytes, t->new_offset);
+        else if (t->new_type != t->t->type)
             copy_mxfp4(t, t->t->offset, t->t->bytes, t->new_offset);
         else if (t->new_bytes != t->t->bytes)
             copy_rows(t, t->t->offset, t->rows, t->rb, t->new_rows, t->new_rb,

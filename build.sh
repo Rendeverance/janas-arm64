@@ -114,7 +114,7 @@ elif [ -n "$JANAS_OS" ]; then
 fi
 CC="${CC:-gcc}"
 
-CPU="$(uname -m)"
+CPU="${BUILD_CPU:-$(uname -m)}"  # BUILD_CPU: x64 Git Bash on an ARM64 machine says x86_64
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 [ "$JANAS_OS" = windows ] && OS=windows
 OBJ="lib/$CPU-$OS-$VARIANT"

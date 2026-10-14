@@ -109,6 +109,47 @@ l2_norm_avx2(float *x, uint32_t n, float eps)
     for (uint32_t i = 0; i < n; i += 8)
         _mm256_storeu_ps(x + i, _mm256_mul_ps(_mm256_loadu_ps(x + i), inv));
 }
+#elif defined(__aarch64__)
+/* The kernels above on NEON, four lanes at a time (ds is a multiple of 8). */
+static void conv_head_neon(struct janas_llm_model *m, const float *wt,
+                           float *src, float *dst, uint32_t c0, uint32_t n)
+{
+    uint32_t cc = m->conv_ch, dc = m->d_conv, a = m->replay;
+    for (uint32_t c = c0; c < c0 + m->ds; c += 4) {
+        float32x4_t win[MAX_CONV], w[MAX_CONV];
+        for (uint32_t i = 0; i < dc; i++)
+            w[i] = vld1q_f32(wt + (size_t)i * cc + c);
+        for (uint32_t i = 0; i + 1 < dc; i++)
+            win[i] = vld1q_f32(src + (size_t)i * cc + c);
+        for (uint32_t t = 0; t < a + n; t++) {
+            if (t == a && a > 0)
+                for (uint32_t i = 0; i + 1 < dc; i++)
+                    vst1q_f32(src + (size_t)i * cc + c, win[i]);
+            win[dc - 1] = vld1q_f32(m->mixed + (size_t)t * cc + c);
+            float32x4_t s = vmulq_f32(win[0], w[0]);
+            for (uint32_t i = 1; i < dc; i++)
+                s = vfmaq_f32(s, win[i], w[i]);
+            vst1q_f32(m->conv_out + (size_t)t * cc + c, janas_silu4(s));
+            for (uint32_t i = 0; i + 1 < dc; i++)
+                win[i] = win[i + 1];
+        }
+        for (uint32_t i = 0; i + 1 < dc; i++)
+            vst1q_f32(dst + (size_t)i * cc + c, win[i]);
+    }
+}
+
+static void l2_norm_neon(float *x, uint32_t n, float eps)
+{
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0;
+    for (uint32_t i = 0; i < n; i += 8) {
+        float32x4_t v0 = vld1q_f32(x + i), v1 = vld1q_f32(x + i + 4);
+        a0 = vfmaq_f32(a0, v0, v0);
+        a1 = vfmaq_f32(a1, v1, v1);
+    }
+    float32x4_t inv = vdupq_n_f32(1.0f / sqrtf(vaddvq_f32(vaddq_f32(a0, a1)) + eps));
+    for (uint32_t i = 0; i < n; i += 4)
+        vst1q_f32(x + i, vmulq_f32(vld1q_f32(x + i), inv));
+}
 #endif
 
 static void l2_norm_ref(float *x, uint32_t n, float eps)
@@ -137,6 +178,10 @@ static void conv_worker(void *arg, int tid, int n_threads)
         if (m->avx2)
             conv_head_avx2(m, a->ly->conv_t, src, dst, c0, a->n);
         else
+#elif defined(__aarch64__)
+        if (!janas_kernels_ref() && m->ds % 8 == 0)
+            conv_head_neon(m, a->ly->conv_t, src, dst, c0, a->n);
+        else
 #endif
             conv_head_ref(m, a->ly->conv_t, src, dst, c0, a->n);
         if (c0 >= 2 * kd) /* a value head: not normalized */
@@ -146,6 +191,10 @@ static void conv_worker(void *arg, int tid, int n_threads)
 #if defined(__x86_64__)
             if (m->avx2)
                 l2_norm_avx2(x, ds, m->eps);
+            else
+#elif defined(__aarch64__)
+            if (!janas_kernels_ref() && ds % 8 == 0)
+                l2_norm_neon(x, ds, m->eps);
             else
 #endif
                 l2_norm_ref(x, ds, m->eps);
@@ -211,6 +260,24 @@ gate_avx2(float *o, const float *z, const float *w, uint32_t n, float eps)
                          _mm256_mul_ps(v, janas_silu8(_mm256_loadu_ps(z + i))));
     }
 }
+#elif defined(__aarch64__)
+/* rms_norm(o) * w * SiLU(z), in place, n a multiple of 8. */
+static void gate_neon(float *o, const float *z, const float *w, uint32_t n,
+                      float eps)
+{
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0;
+    for (uint32_t i = 0; i < n; i += 8) {
+        float32x4_t v0 = vld1q_f32(o + i), v1 = vld1q_f32(o + i + 4);
+        a0 = vfmaq_f32(a0, v0, v0);
+        a1 = vfmaq_f32(a1, v1, v1);
+    }
+    float32x4_t sc =
+        vdupq_n_f32(1.0f / sqrtf(vaddvq_f32(vaddq_f32(a0, a1)) / n + eps));
+    for (uint32_t i = 0; i < n; i += 4) {
+        float32x4_t v = vmulq_f32(vmulq_f32(vld1q_f32(o + i), sc), vld1q_f32(w + i));
+        vst1q_f32(o + i, vmulq_f32(v, janas_silu4(vld1q_f32(z + i))));
+    }
+}
 #endif
 
 /* 3. RMS norm (ssm_norm) of each head's output, gated by SiLU(z): item =
@@ -234,6 +301,11 @@ static void gate_worker(void *arg, int tid, int n_threads)
 #if defined(__x86_64__)
         if (m->avx2) {
             gate_avx2(o, z, w, ds, m->eps);
+            continue;
+        }
+#elif defined(__aarch64__)
+        if (!janas_kernels_ref() && ds % 8 == 0) {
+            gate_neon(o, z, w, ds, m->eps);
             continue;
         }
 #endif

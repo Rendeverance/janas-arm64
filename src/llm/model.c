@@ -631,6 +631,19 @@ exp_sum_avx2(const float *l, uint32_t n, float mx, uint32_t *done)
     *done = i;
     return janas_hsum8(acc);
 }
+#elif defined(__aarch64__)
+/* The same on NEON: eight lanes in two accumulators. */
+static double exp_sum_neon(const float *l, uint32_t n, float mx, uint32_t *done)
+{
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0, vm = vdupq_n_f32(mx);
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        a0 = vaddq_f32(a0, janas_exp4(vsubq_f32(vld1q_f32(l + i), vm)));
+        a1 = vaddq_f32(a1, janas_exp4(vsubq_f32(vld1q_f32(l + i + 4), vm)));
+    }
+    *done = i;
+    return vaddvq_f32(vaddq_f32(a0, a1));
+}
 #endif
 
 double janas_m_exp_sum(const float *l, uint32_t n, float mx)
@@ -640,6 +653,9 @@ double janas_m_exp_sum(const float *l, uint32_t n, float mx)
 #if defined(__x86_64__)
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
         sum = exp_sum_avx2(l, n, mx, &i);
+#elif defined(__aarch64__)
+    if (!janas_kernels_ref())
+        sum = exp_sum_neon(l, n, mx, &i);
 #endif
     for (; i < n; i++)
         sum += expf(l[i] - mx);
@@ -701,6 +717,9 @@ int janas_llm_mtp_draft(struct janas_llm_model *m, const int32_t *tokens,
 #if defined(__x86_64__)
     if (m->avx2)
         sum = exp_sum_avx2(l, m->dh_n, mx, &i);
+#elif defined(__aarch64__)
+    if (!janas_kernels_ref())
+        sum = exp_sum_neon(l, m->dh_n, mx, &i);
 #endif
     for (; i < m->dh_n; i++)
         sum += expf(l[i] - mx);

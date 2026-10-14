@@ -298,10 +298,76 @@ q8k_quantize_det_avx2(const float *x, struct janas_block_q8k *y, size_t n)
         q8k_block_avx2(x, &y[b], d > 0.0f ? janas_recip_det(d) : 0.0f, 1);
     }
 }
+#elif defined(__aarch64__)
+/* The AVX2 quantizer above on NEON, bit for bit the same (and so the
+   reference's): an exact maximum, vcvtnq rounding to nearest even as
+   lrintf, the same clamp, d and its reciprocal the same scalar operations. */
+#include <arm_neon.h>
+static float q8_amax_n(const float *x, int n)
+{
+    float32x4_t a = vabsq_f32(vld1q_f32(x));
+    for (int i = 4; i < n; i += 4)
+        a = vmaxq_f32(a, vabsq_f32(vld1q_f32(x + i)));
+    return vmaxvq_f32(a);
+}
+
+static void q8_groups_neon(const float *x, int8_t *qs, int16_t *bsums,
+                           int groups, float id)
+{
+    const float32x4_t vid = vdupq_n_f32(id);
+    const int32x4_t lo = vdupq_n_s32(-127), hi = vdupq_n_s32(127);
+    for (int g = 0; g < groups; g++) {
+        const float *xg = x + g * 16;
+        int32x4_t i0 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(xg), vid));
+        int32x4_t i1 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(xg + 4), vid));
+        int32x4_t i2 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(xg + 8), vid));
+        int32x4_t i3 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(xg + 12), vid));
+        i0 = vminq_s32(vmaxq_s32(i0, lo), hi);
+        i1 = vminq_s32(vmaxq_s32(i1, lo), hi);
+        i2 = vminq_s32(vmaxq_s32(i2, lo), hi);
+        i3 = vminq_s32(vmaxq_s32(i3, lo), hi);
+        bsums[g] = (int16_t)vaddvq_s32(vaddq_s32(vaddq_s32(i0, i1), vaddq_s32(i2, i3)));
+        int16x8_t h0 = vcombine_s16(vmovn_s32(i0), vmovn_s32(i1));
+        int16x8_t h1 = vcombine_s16(vmovn_s32(i2), vmovn_s32(i3));
+        vst1q_s8(qs + g * 16, vcombine_s8(vmovn_s16(h0), vmovn_s16(h1)));
+    }
+}
+
+static void q8k_block_neon(const float *x, struct janas_block_q8k *y, float id,
+                           int det)
+{
+    q8_groups_neon(x, y->qs, y->bsums, JANAS_QK / 16, id);
+    vst1q_s16(y->bsums2, vpaddq_s16(vld1q_s16(y->bsums), vld1q_s16(y->bsums + 8)));
+    for (int k = 0; k < 8; k++) {
+        float amax = q8_amax_n(x + 32 * k, 32);
+        float d = det ? amax * 0.007874015718698502f : amax / 127.0f;
+        y->d32[k] = d;
+        q8_groups_neon(x + 32 * k, y->qs32 + 32 * k, y->bsums32 + 2 * k, 2,
+                       d > 0.0f ? (det ? janas_recip_det(d) : 1.0f / d) : 0.0f);
+    }
+}
+
+static void q8k_quantize_neon(const float *x, struct janas_block_q8k *y,
+                              size_t n, int det)
+{
+    for (size_t b = 0; b < n / JANAS_QK; b++, x += JANAS_QK) {
+        float amax = q8_amax_n(x, JANAS_QK);
+        float d = det ? amax * 0.007874015718698502f : amax / 127.0f;
+        y[b].d = d;
+        q8k_block_neon(x, &y[b],
+                       d > 0.0f ? (det ? janas_recip_det(d) : 1.0f / d) : 0.0f, det);
+    }
+}
 #endif
 
 void janas_q8k_quantize(const float *x, struct janas_block_q8k *y, size_t n)
 {
+#if defined(__aarch64__)
+    if (!janas_kernels_ref()) {
+        q8k_quantize_neon(x, y, n, 0);
+        return;
+    }
+#endif
 #if defined(__x86_64__)
     if (use_avx2_fma) {
         q8k_quantize_avx2(x, y, n);
@@ -313,6 +379,12 @@ void janas_q8k_quantize(const float *x, struct janas_block_q8k *y, size_t n)
 
 void janas_q8k_quantize_det(const float *x, struct janas_block_q8k *y, size_t n)
 {
+#if defined(__aarch64__)
+    if (!janas_kernels_ref()) {
+        q8k_quantize_neon(x, y, n, 1);
+        return;
+    }
+#endif
 #if defined(__x86_64__)
     if (use_avx2_fma) {
         q8k_quantize_det_avx2(x, y, n);
@@ -1143,6 +1215,10 @@ static float e8m0_tab[256];
 #undef DOTN_ACC
 #endif
 
+#if defined(__aarch64__)
+#include "quant_neon.h"
+#endif
+
 typedef float (*dot_fn)(const struct janas_block_q4k *,
                         const struct janas_block_q8k *, size_t);
 typedef float (*dot6_fn)(const struct janas_block_q6k *,
@@ -1190,9 +1266,9 @@ static int use_vnni;
 /* Resolved before main: the kernels are first called from pool threads. */
 __attribute__((constructor)) static void dot_kernels_init(void)
 {
+#if defined(__x86_64__)
     for (int e = 0; e < 256; e++)
         e8m0_tab[e] = janas_e8m0_half((uint8_t)e);
-#if defined(__x86_64__)
     __builtin_cpu_init();
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") &&
         __builtin_cpu_supports("f16c")) {
@@ -1229,7 +1305,30 @@ __attribute__((constructor)) static void dot_kernels_init(void)
             dot_name = "avx-vnni";
         }
     }
+#elif defined(__aarch64__)
+    const char *k = getenv("JANAS_KERNELS"); /* ref: the scalar reference */
+    if (neon_has_dotprod() && !(k && !strcmp(k, "ref"))) {
+        dot6_impl = q6k_dot_neon;
+        dot80_impl = q8_0_dot_neon;
+        dotnl_impl = iq4nl_dot_neon;
+        dot40_impl = q4_0_dot_neon;
+        dot51_impl = q5_1_dot_neon;
+        dot41_impl = q4_1_dot_neon;
+        dot_name = "neon-dotprod";
+    }
 #endif
+}
+
+/* JANAS_KERNELS=ref: every kernel's scalar reference (the ARM64 build's
+   float kernels look here; quant.c's own pick is made in dot_kernels_init). */
+int janas_kernels_ref(void)
+{
+    static int ref = -1;
+    if (ref < 0) {
+        const char *k = getenv("JANAS_KERNELS");
+        ref = k && !strcmp(k, "ref");
+    }
+    return ref;
 }
 
 int janas_use_vnni(void)
@@ -1516,6 +1615,37 @@ axpy_f32_avx2(float *y, float a, const float *x, size_t n)
 }
 #endif
 
+#if defined(__aarch64__)
+/* Dot product and y += a * x on NEON. */
+static float dot_f32_neon(const float *a, const float *b, size_t n)
+{
+    float32x4_t s0 = vdupq_n_f32(0.0f), s1 = s0, s2 = s0, s3 = s0;
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
+        s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
+        s2 = vfmaq_f32(s2, vld1q_f32(a + i + 8), vld1q_f32(b + i + 8));
+        s3 = vfmaq_f32(s3, vld1q_f32(a + i + 12), vld1q_f32(b + i + 12));
+    }
+    for (; i + 4 <= n; i += 4)
+        s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
+    float r = vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)));
+    for (; i < n; i++)
+        r += a[i] * b[i];
+    return r;
+}
+
+static void axpy_f32_neon(float *y, float a, const float *x, size_t n)
+{
+    float32x4_t va = vdupq_n_f32(a);
+    size_t i = 0;
+    for (; i + 4 <= n; i += 4)
+        vst1q_f32(y + i, vfmaq_f32(vld1q_f32(y + i), va, vld1q_f32(x + i)));
+    for (; i < n; i++)
+        y[i] += a * x[i];
+}
+#endif
+
 /* Resolved before main, so the float helpers never race on it. */
 __attribute__((constructor)) static void float_helpers_init(void)
 {
@@ -1528,6 +1658,10 @@ __attribute__((constructor)) static void float_helpers_init(void)
 
 float janas_dot_f32(const float *a, const float *b, size_t n)
 {
+#if defined(__aarch64__)
+    if (!janas_kernels_ref())
+        return dot_f32_neon(a, b, n);
+#endif
 #if defined(__x86_64__)
     if (use_avx2_fma)
         return dot_f32_avx2(a, b, n);
@@ -1537,6 +1671,12 @@ float janas_dot_f32(const float *a, const float *b, size_t n)
 
 void janas_axpy_f32(float *y, float a, const float *x, size_t n)
 {
+#if defined(__aarch64__)
+    if (!janas_kernels_ref()) {
+        axpy_f32_neon(y, a, x, n);
+        return;
+    }
+#endif
 #if defined(__x86_64__)
     if (use_avx2_fma) {
         axpy_f32_avx2(y, a, x, n);
@@ -1669,6 +1809,33 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
             default:
                 (use_vnni ? q8_0_dotn_vnni : q8_0_dotn_avx2)(w, xv, x_stride, g,
                                                              nb, r);
+            }
+            for (int i = 0; i < g; i++)
+                out[(v + (size_t)i) * out_stride] = r[i];
+        }
+        return;
+    }
+#elif defined(__aarch64__)
+    if (dot40_impl == q4_0_dot_neon &&
+        (type == JANAS_Q4_0 || type == JANAS_IQ4_NL || type == JANAS_Q8_0 ||
+         type == JANAS_Q6_K)) {
+        float r[8];
+        int g = 1;
+        for (; v < nv; v += (size_t)g) {
+            g = nv - v >= 8 ? 8 : (int)(nv - v);
+            const struct janas_block_q8k *xv = x + v * x_stride;
+            switch (type) {
+            case JANAS_Q4_0:
+                neon_nib_dotn(w, xv, x_stride, g, nb, r, janas_q4_0_values);
+                break;
+            case JANAS_IQ4_NL:
+                neon_nib_dotn(w, xv, x_stride, g, nb, r, janas_iq4_values);
+                break;
+            case JANAS_Q6_K:
+                q6k_dotn_neon(w, xv, x_stride, g, nb, r);
+                break;
+            default:
+                q8_0_dotn_neon(w, xv, x_stride, g, nb, r);
             }
             for (int i = 0; i < g; i++)
                 out[(v + (size_t)i) * out_stride] = r[i];

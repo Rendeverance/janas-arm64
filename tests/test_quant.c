@@ -374,7 +374,7 @@ static void test_matvec_multi(void)
    match the single-vector kernel bit for bit. */
 static void test_matvec_multi_b32(void)
 {
-    enum { ROWS = 301, COLS = 2048, NB = COLS / JANAS_QK, NV = 5 };
+    enum { ROWS = 301, COLS = 2048, NB = COLS / JANAS_QK, NV = 19 };
     static const int types[] = {JANAS_Q4_0, JANAS_IQ4_NL, JANAS_Q8_0};
     struct janas_block_q8k *x = malloc((size_t)NV * NB * sizeof(*x));
     float *xf = malloc(COLS * sizeof(float));

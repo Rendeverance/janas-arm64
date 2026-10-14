@@ -1916,11 +1916,56 @@ void janas_dot_multi_rows(int type, const void *w, size_t row_bytes, size_t nr,
     const char *wb = w;
     size_t v = 0;
 #if defined(__aarch64__)
-    /* where it pays, measured on a Snapdragon X (Oryon): 4-bit weights,
-       which every vector pair then shares unpacked, on 2 to 4 vectors. Q8_0
-       has nothing to unpack, and from 5 vectors janas_dot_multi's reuse of
-       the weights across all of them wins */
-    if (use_i8mm && nv >= 2 && nv <= 4 && nr >= 2 && nb <= NEON_MM_MAX_NB &&
+    /* 4-bit weights (Q4_0, IQ4_NL) on the matrix instructions, eight
+       vectors at a time across all the rows: each pair of rows is unpacked
+       once into wi, then multiplied by every pair of vectors, their
+       activations interleaved once in xi. An odd vector is paired with
+       itself: the lanes do not mix, so it costs a pair's work on rows
+       already unpacked, where SDOT would unpack them again. Measured on a
+       Snapdragon X (Oryon), 8 threads, against SDOT: 3 to 8 vectors 7 to
+       25% faster (8 vectors on one core 33%); 2 vectors lose to neon_mm_nib
+       below, which unpacks as it goes, and Q8_0 has nothing to unpack */
+    if (use_i8mm && nv >= 3 && nr >= 2 && nb <= NEON_MM_MAX_NB &&
+        (type == JANAS_Q4_0 || type == JANAS_IQ4_NL)) {
+        const int8_t *lv =
+            type == JANAS_Q4_0 ? janas_q4_0_values : janas_iq4_values;
+        int8_t xi[4][NEON_MM_MAX_NB * 512] __attribute__((aligned(16)));
+        int8_t wi[NEON_MM_MAX_NB * 512] __attribute__((aligned(16)));
+        for (; v < nv;) {
+            size_t g = nv - v < 8 ? nv - v : 8, np = (g + 1) / 2;
+            const struct janas_block_q8k *xv = x + v * x_stride;
+            for (size_t p = 0; p < np; p++) {
+                size_t u = 2 * p + 1 < g ? 2 * p + 1 : 2 * p;
+                neon_mm_interleave(xv + 2 * p * x_stride, xv + u * x_stride, nb,
+                                   xi[p]);
+            }
+            size_t i = 0;
+            for (; i + 1 < nr; i += 2) {
+                const void *r0 = wb + i * row_bytes;
+                const void *r1 = wb + (i + 1) * row_bytes;
+                neon_mm_unpack(r0, r1, nb, lv, wi);
+                for (size_t p = 0; p < np; p++) {
+                    size_t u = 2 * p + 1 < g ? 2 * p + 1 : 2 * p;
+                    float o[4];
+                    float *y = out + i + (v + 2 * p) * out_stride;
+                    neon_mm_nib_pre(r0, r1, wi, xv + 2 * p * x_stride,
+                                    xv + u * x_stride, xi[p], nb, o);
+                    y[0] = o[0];
+                    y[1] = o[2];
+                    if (u != 2 * p) {
+                        y[out_stride] = o[1];
+                        y[1 + out_stride] = o[3];
+                    }
+                }
+            }
+            if (i < nr) /* an odd row: all g vectors */
+                janas_dot_multi(type, wb + i * row_bytes, xv, x_stride, g, nb,
+                                out + i + v * out_stride, out_stride);
+            v += g;
+        }
+    }
+    /* two vectors */
+    if (use_i8mm && nv == 2 && nr >= 2 && nb <= NEON_MM_MAX_NB &&
         (type == JANAS_Q4_0 || type == JANAS_IQ4_NL)) {
         int8_t xi[NEON_MM_MAX_NB * 8 * 64] __attribute__((aligned(16)));
         for (; v + 1 < nv; v += 2) {

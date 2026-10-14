@@ -123,3 +123,57 @@ static NEON_MM void neon_mm_nib(const struct janas_block_iq4nl *w0,
     for (int p = 0; p < 4; p++)
         out[p] = neon_sum8(acc[p][0], acc[p][1]);
 }
+
+/* A pair of rows unpacked once for several pairs of vectors: per block of
+   32 the four operands neon_mm_nib makes, 64 bytes, into wi. */
+static NEON_MM void neon_mm_unpack(const struct janas_block_iq4nl *w0,
+                                   const struct janas_block_iq4nl *w1,
+                                   size_t nb, const int8_t *lv, int8_t *wi)
+{
+    const int8x16_t levels = vld1q_s8(lv);
+    const uint8x16_t m4 = vdupq_n_u8(15);
+    for (size_t k = 0; k < 8 * nb; k++) {
+        uint64x2_t q0 = vreinterpretq_u64_u8(vld1q_u8(w0[k].qs));
+        uint64x2_t q1 = vreinterpretq_u64_u8(vld1q_u8(w1[k].qs));
+        uint8x16_t lo = vreinterpretq_u8_u64(vzip1q_u64(q0, q1));
+        uint8x16_t hi = vreinterpretq_u8_u64(vzip2q_u64(q0, q1));
+        int8_t *o = wi + 64 * k;
+        vst1q_s8(o, vqtbl1q_s8(levels, vandq_u8(lo, m4)));
+        vst1q_s8(o + 16, vqtbl1q_s8(levels, vshrq_n_u8(lo, 4)));
+        vst1q_s8(o + 32, vqtbl1q_s8(levels, vandq_u8(hi, m4)));
+        vst1q_s8(o + 48, vqtbl1q_s8(levels, vshrq_n_u8(hi, 4)));
+    }
+}
+
+/* neon_mm_nib on rows already unpacked into wi (neon_mm_unpack); w0, w1
+   give the scales. The same steps in the same order: the same results. */
+static NEON_MM void neon_mm_nib_pre(const struct janas_block_iq4nl *w0,
+                                    const struct janas_block_iq4nl *w1,
+                                    const int8_t *wi,
+                                    const struct janas_block_q8k *a,
+                                    const struct janas_block_q8k *b,
+                                    const int8_t *xi, size_t nb, float out[4])
+{
+    float32x4_t acc[4][2];
+    for (int p = 0; p < 4; p++)
+        acc[p][0] = acc[p][1] = vdupq_n_f32(0.0f);
+    for (size_t s = 0; s < nb; s++) {
+        const struct janas_block_iq4nl *r0 = w0 + 8 * s, *r1 = w1 + 8 * s;
+        int32x4_t dots[8];
+        for (int k = 0; k < 8; k++) {
+            const int8_t *u = wi + (s * 8 + (size_t)k) * 64;
+            dots[k] =
+                neon_mm_block(vld1q_s8(u), vld1q_s8(u + 16), vld1q_s8(u + 32),
+                              vld1q_s8(u + 48), xi + (s * 8 + (size_t)k) * 64);
+        }
+        float32x4_t d0[2] = {neon_h2f4(&r0[0].d, sizeof(*r0)),
+                             neon_h2f4(&r0[4].d, sizeof(*r0))};
+        float32x4_t d1[2] = {neon_h2f4(&r1[0].d, sizeof(*r1)),
+                             neon_h2f4(&r1[4].d, sizeof(*r1))};
+        float32x4_t xa[2] = {vld1q_f32(a[s].d32), vld1q_f32(a[s].d32 + 4)};
+        float32x4_t xb[2] = {vld1q_f32(b[s].d32), vld1q_f32(b[s].d32 + 4)};
+        neon_mm_acc(dots, d0, d1, xa, xb, acc);
+    }
+    for (int p = 0; p < 4; p++)
+        out[p] = neon_sum8(acc[p][0], acc[p][1]);
+}

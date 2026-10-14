@@ -1217,6 +1217,7 @@ static float e8m0_tab[256];
 
 #if defined(__aarch64__)
 #include "quant_neon.h"
+#include "quant_neon_k.h"
 #endif
 
 typedef float (*dot_fn)(const struct janas_block_q4k *,
@@ -1314,6 +1315,12 @@ __attribute__((constructor)) static void dot_kernels_init(void)
         dot40_impl = q4_0_dot_neon;
         dot51_impl = q5_1_dot_neon;
         dot41_impl = q4_1_dot_neon;
+        dot_impl = q4k_dot_neon;
+        dot5_impl = q5k_dot_neon;
+        dot3_impl = q3k_dot_neon;
+        dotis_impl = iq3s_dot_neon;
+        dotxs_impl = iq4xs_dot_neon;
+        dotmx_impl = mxfp4_dot_neon;
         dot_name = "neon-dotprod";
     }
 #endif
@@ -1818,7 +1825,9 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
 #elif defined(__aarch64__)
     if (dot40_impl == q4_0_dot_neon &&
         (type == JANAS_Q4_0 || type == JANAS_IQ4_NL || type == JANAS_Q8_0 ||
-         type == JANAS_Q6_K)) {
+         type == JANAS_Q6_K || type == JANAS_Q4_K || type == JANAS_Q5_K ||
+         type == JANAS_Q3_K || type == JANAS_IQ3_S || type == JANAS_IQ4_XS ||
+         type == JANAS_MXFP4 || type == JANAS_Q4_1 || type == JANAS_Q5_1)) {
         float r[8];
         int g = 1;
         for (; v < nv; v += (size_t)g) {
@@ -1833,6 +1842,26 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
                 break;
             case JANAS_Q6_K:
                 q6k_dotn_neon(w, xv, x_stride, g, nb, r);
+                break;
+            case JANAS_Q4_K:
+                neon_kmin_dotn(w, sizeof(struct janas_block_q4k), 0, xv, x_stride, g, nb, r);
+                break;
+            case JANAS_Q5_K:
+                neon_kmin_dotn(w, sizeof(struct janas_block_q5k), 1, xv, x_stride, g, nb, r);
+                break;
+            case JANAS_Q3_K:
+            case JANAS_IQ3_S:
+            case JANAS_IQ4_XS:
+                neon_kgroup_dotn(type, w, xv, x_stride, g, nb, r);
+                break;
+            case JANAS_MXFP4:
+                mxfp4_dotn_neon(w, xv, x_stride, g, nb, r);
+                break;
+            case JANAS_Q4_1:
+                neon_dm_dotn(w, sizeof(struct janas_block_q4_1), 0, xv, x_stride, g, nb, r);
+                break;
+            case JANAS_Q5_1:
+                neon_dm_dotn(w, sizeof(struct janas_block_q5_1), 1, xv, x_stride, g, nb, r);
                 break;
             default:
                 q8_0_dotn_neon(w, xv, x_stride, g, nb, r);

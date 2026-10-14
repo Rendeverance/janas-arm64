@@ -22,6 +22,7 @@
 
 #include "matvec.h"
 #include "vmath.h"
+#include "quant.h" /* janas_kernels_ref */
 
 #include "model_impl.h"
 
@@ -101,12 +102,57 @@ dot4_bf16_avx2(const uint16_t *w, const float *const x[4], uint32_t n,
         out[t] = r;
     }
 }
+#elif defined(__aarch64__)
+/* bf16 to f32 is a 16-bit shift; eight lanes in two accumulators, and the
+   four-token kernel the same for each token */
+static float dot_bf16_neon(const uint16_t *w, const float *x, uint32_t n)
+{
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0;
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint16x8_t h = vld1q_u16(w + i);
+        float32x4_t w0 = vreinterpretq_f32_u32(vshll_n_u16(vget_low_u16(h), 16));
+        float32x4_t w1 = vreinterpretq_f32_u32(vshll_high_n_u16(h, 16));
+        a0 = vfmaq_f32(a0, w0, vld1q_f32(x + i));
+        a1 = vfmaq_f32(a1, w1, vld1q_f32(x + i + 4));
+    }
+    float r = vaddvq_f32(vaddq_f32(a0, a1));
+    for (; i < n; i++)
+        r += janas_u2f((uint32_t)w[i] << 16) * x[i];
+    return r;
+}
+
+static void dot4_bf16_neon(const uint16_t *w, const float *const x[4],
+                           uint32_t n, float out[4])
+{
+    float32x4_t a0[4], a1[4];
+    for (int t = 0; t < 4; t++)
+        a0[t] = a1[t] = vdupq_n_f32(0.0f);
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint16x8_t h = vld1q_u16(w + i);
+        float32x4_t w0 = vreinterpretq_f32_u32(vshll_n_u16(vget_low_u16(h), 16));
+        float32x4_t w1 = vreinterpretq_f32_u32(vshll_high_n_u16(h, 16));
+        for (int t = 0; t < 4; t++) {
+            a0[t] = vfmaq_f32(a0[t], w0, vld1q_f32(x[t] + i));
+            a1[t] = vfmaq_f32(a1[t], w1, vld1q_f32(x[t] + i + 4));
+        }
+    }
+    for (int t = 0; t < 4; t++) {
+        float r = vaddvq_f32(vaddq_f32(a0[t], a1[t]));
+        for (uint32_t k = i; k < n; k++)
+            r += janas_u2f((uint32_t)w[k] << 16) * x[t][k];
+        out[t] = r;
+    }
+}
 #endif
 
 static int have_avx2(void)
 {
 #if defined(__x86_64__)
     return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#elif defined(__aarch64__)
+    return !janas_kernels_ref(); /* the NEON kernels below */
 #else
     return 0;
 #endif
@@ -117,6 +163,9 @@ static float dot_bf16(const uint16_t *w, const float *x, uint32_t n)
 #if defined(__x86_64__)
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
         return dot_bf16_avx2(w, x, n);
+#elif defined(__aarch64__)
+    if (!janas_kernels_ref())
+        return dot_bf16_neon(w, x, n);
 #endif
     float r = 0.0f;
     for (uint32_t i = 0; i < n; i++)
@@ -146,6 +195,16 @@ static void bf16_worker(void *arg, int tid, int n_threads)
                 for (int t = 0; t < 4; t++)
                     x[t] = b->x + (size_t)(j + t) * b->cols;
                 dot4_bf16_avx2(w, x, b->cols, o);
+                for (int t = 0; t < 4; t++)
+                    b->y[(size_t)(j + t) * b->rows + r] = o[t] * b->scale;
+            }
+#elif defined(__aarch64__)
+            for (; v && j + 4 <= b->n; j += 4) {
+                const float *x[4];
+                float o[4];
+                for (int t = 0; t < 4; t++)
+                    x[t] = b->x + (size_t)(j + t) * b->cols;
+                dot4_bf16_neon(w, x, b->cols, o);
                 for (int t = 0; t < 4; t++)
                     b->y[(size_t)(j + t) * b->rows + r] = o[t] * b->scale;
             }
@@ -204,6 +263,42 @@ dot4_f32_avx2(const float *w, const float *const x[4], uint32_t n, float out[4])
         out[t] = r;
     }
 }
+#elif defined(__aarch64__)
+static float dot_f32_neon_ple(const float *w, const float *x, uint32_t n)
+{
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0;
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        a0 = vfmaq_f32(a0, vld1q_f32(w + i), vld1q_f32(x + i));
+        a1 = vfmaq_f32(a1, vld1q_f32(w + i + 4), vld1q_f32(x + i + 4));
+    }
+    float r = vaddvq_f32(vaddq_f32(a0, a1));
+    for (; i < n; i++)
+        r += w[i] * x[i];
+    return r;
+}
+
+static void dot4_f32_neon(const float *w, const float *const x[4], uint32_t n,
+                          float out[4])
+{
+    float32x4_t a0[4], a1[4];
+    for (int t = 0; t < 4; t++)
+        a0[t] = a1[t] = vdupq_n_f32(0.0f);
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        float32x4_t w0 = vld1q_f32(w + i), w1 = vld1q_f32(w + i + 4);
+        for (int t = 0; t < 4; t++) {
+            a0[t] = vfmaq_f32(a0[t], w0, vld1q_f32(x[t] + i));
+            a1[t] = vfmaq_f32(a1[t], w1, vld1q_f32(x[t] + i + 4));
+        }
+    }
+    for (int t = 0; t < 4; t++) {
+        float r = vaddvq_f32(vaddq_f32(a0[t], a1[t]));
+        for (uint32_t k = i; k < n; k++)
+            r += w[k] * x[t][k];
+        out[t] = r;
+    }
+}
 #endif
 
 /* one dot product, the same for a row and a token whatever the pass */
@@ -212,6 +307,9 @@ static float dot_f32(const float *w, const float *x, uint32_t n)
 #if defined(__x86_64__)
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
         return dot_f32_avx2(w, x, n);
+#elif defined(__aarch64__)
+    if (!janas_kernels_ref())
+        return dot_f32_neon_ple(w, x, n);
 #endif
     float r = 0.0f;
     for (uint32_t i = 0; i < n; i++)
@@ -242,6 +340,16 @@ static void f32_worker(void *arg, int tid, int n_threads)
                 for (int t = 0; t < 4; t++)
                     x[t] = b->x + (size_t)(j + t) * b->cols;
                 dot4_f32_avx2(w, x, b->cols, o);
+                for (int t = 0; t < 4; t++)
+                    b->y[(size_t)(j + t) * b->rows + r] = o[t];
+            }
+#elif defined(__aarch64__)
+            for (; v && j + 4 <= b->n; j += 4) {
+                const float *x[4];
+                float o[4];
+                for (int t = 0; t < 4; t++)
+                    x[t] = b->x + (size_t)(j + t) * b->cols;
+                dot4_f32_neon(w, x, b->cols, o);
                 for (int t = 0; t < 4; t++)
                     b->y[(size_t)(j + t) * b->rows + r] = o[t];
             }

@@ -87,15 +87,31 @@ static NEON_DP void neon_kmin_dotn(const void *wv, size_t bsz, int five,
         uint8_t sc[8], m[8];
         unpack_scales(scales, sc, m);
         float fd = neon_h2f(d), fm = neon_h2f(dmin);
+        /* the eight sub-block scales and minimums as int32 vectors */
+        uint16x8_t sc16 = vmovl_u8(vld1_u8(sc)), m16 = vmovl_u8(vld1_u8(m));
+        int32x4_t sc0 = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(sc16)));
+        int32x4_t sc1 = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(sc16)));
+        int32x4_t m0 = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(m16)));
+        int32x4_t m1 = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(m16)));
         for (int v = 0; v < nv; v++) {
             const struct janas_block_q8k *xb = x + v * xs + b;
-            int32_t sumi = 0, summ = 0;
-            for (int s = 0; s < 8; s++) {
-                sumi += sc[s] * neon_dotn_i8(q + 32 * s, xb->qs + 32 * s, 32);
-                summ += m[s] * (xb->bsums[2 * s] + xb->bsums[2 * s + 1]);
+            int32x4_t p[8];
+            for (int k = 0; k < 8; k++) {
+                const int8_t *wq = q + 32 * k, *aq = xb->qs + 32 * k;
+                p[k] = vdotq_s32(
+                    vdotq_s32(vdupq_n_s32(0), vld1q_s8(wq), vld1q_s8(aq)),
+                    vld1q_s8(wq + 16), vld1q_s8(aq + 16));
             }
-            acc[v] = fmaf(fd * xb->d, (float)sumi, acc[v]);
-            accm[v] = fmaf(fm * xb->d, (float)summ, accm[v]);
+            /* exact: the same int32 sums as sub-block by sub-block */
+            int32x4_t si = vmulq_s32(neon_red4(p[0], p[1], p[2], p[3]), sc0);
+            si = vmlaq_s32(si, neon_red4(p[4], p[5], p[6], p[7]), sc1);
+            /* each sub-block's activation sum: its two bsums */
+            int16x8_t bs =
+                vpaddq_s16(vld1q_s16(xb->bsums), vld1q_s16(xb->bsums + 8));
+            int32x4_t sm = vmulq_s32(vmovl_s16(vget_low_s16(bs)), m0);
+            sm = vmlaq_s32(sm, vmovl_s16(vget_high_s16(bs)), m1);
+            acc[v] = fmaf(fd * xb->d, (float)vaddvq_s32(si), acc[v]);
+            accm[v] = fmaf(fm * xb->d, (float)vaddvq_s32(sm), accm[v]);
         }
     }
     for (int v = 0; v < nv; v++)
@@ -118,8 +134,26 @@ static NEON_DP void neon_kgroup_dotn(int type, const void *wv,
                 (const struct janas_block_q3k *)wv + b;
             int8_t sc[16];
             q3k_scales(w->scales, sc);
-            for (int e = 0; e < JANAS_QK; e++)
-                q[e] = (int8_t)q3k_value(w, e);
+            /* weight e = 128n + 32j + 16h + l: two bits at 2j of
+               qs[32n + 16h + l], the third bit j + 4n of hmask[16h + l],
+               the value q - 4 + 4 * bit (q3k_value), group 8n + 2j + h */
+            const uint8x16_t m3 = vdupq_n_u8(3), b2 = vdupq_n_u8(4);
+            for (int n = 0; n < 2; n++)
+                for (int h = 0; h < 2; h++) {
+                    uint8x16_t qs = vld1q_u8(w->qs + 32 * n + 16 * h);
+                    uint8x16_t hm = vld1q_u8(w->hmask + 16 * h);
+                    uint8x16_t two[4] = {qs, vshrq_n_u8(qs, 2),
+                                         vshrq_n_u8(qs, 4), vshrq_n_u8(qs, 6)};
+                    for (int j = 0; j < 4; j++) {
+                        uint8x16_t bit = vtstq_u8(
+                            hm, vdupq_n_u8((uint8_t)(1u << (j + 4 * n))));
+                        uint8x16_t v =
+                            vorrq_u8(vandq_u8(two[j], m3), vandq_u8(bit, b2));
+                        vst1q_s8(q + 16 * (8 * n + 2 * j + h),
+                                 vsubq_s8(vreinterpretq_s8_u8(v),
+                                          vreinterpretq_s8_u8(b2)));
+                    }
+                }
             for (int g = 0; g < 16; g++)
                 scl[g] = sc[g];
             ng = 16;
@@ -154,10 +188,24 @@ static NEON_DP void neon_kgroup_dotn(int type, const void *wv,
         float fd = neon_h2f(d);
         for (int v = 0; v < nv; v++) {
             const struct janas_block_q8k *xb = x + v * xs + b;
-            int32_t sumi = 0;
-            for (int g = 0; g < ng; g++)
-                sumi += scl[g] * neon_dotn_i8(q + gs * g, xb->qs + gs * g, gs);
-            acc[v] = fmaf(fd * xb->d, (float)sumi, acc[v]);
+            /* each group's exact dot in four lanes, four groups reduced
+               into one vector and times their scales: the same int32 */
+            int32x4_t si = vdupq_n_s32(0);
+            for (int g4 = 0; g4 < ng; g4 += 4) {
+                int32x4_t p[4];
+                for (int k = 0; k < 4; k++) {
+                    const int8_t *wq = q + gs * (g4 + k);
+                    const int8_t *aq = xb->qs + gs * (g4 + k);
+                    p[k] =
+                        vdotq_s32(vdupq_n_s32(0), vld1q_s8(wq), vld1q_s8(aq));
+                    if (gs == 32)
+                        p[k] = vdotq_s32(p[k], vld1q_s8(wq + 16),
+                                         vld1q_s8(aq + 16));
+                }
+                si = vmlaq_s32(si, neon_red4(p[0], p[1], p[2], p[3]),
+                               vld1q_s32(scl + g4));
+            }
+            acc[v] = fmaf(fd * xb->d, (float)vaddvq_s32(si), acc[v]);
         }
     }
     for (int v = 0; v < nv; v++)

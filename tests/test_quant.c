@@ -369,25 +369,27 @@ static void test_matvec_multi(void)
 }
 
 /* The formats in blocks of 32 through the group product, more vectors and
-   rows than one call takes at once and odd counts of both (ARM64 with I8MM
-   takes two rows by two vectors, the rest one by one): every result must
-   match the single-vector kernel bit for bit. */
-static void test_matvec_multi_b32(void)
+   rows than one call takes at once and odd counts of both, rows of 1 to 33
+   blocks of 256 (ARM64 with I8MM takes pairs of rows by pairs of vectors in
+   rows of up to 32, the rest one by one): every result must match the
+   single-vector kernel bit for bit. */
+static void test_matvec_multi_b32_cols(size_t cols)
 {
-    enum { ROWS = 301, COLS = 2048, NB = COLS / JANAS_QK, NV = 19 };
+    enum { ROWS = 301, NV = 19 };
+    const size_t nb = cols / JANAS_QK;
     static const int types[] = {JANAS_Q4_0, JANAS_IQ4_NL, JANAS_Q8_0};
-    struct janas_block_q8k *x = malloc((size_t)NV * NB * sizeof(*x));
-    float *xf = malloc(COLS * sizeof(float));
+    struct janas_block_q8k *x = malloc((size_t)NV * nb * sizeof(*x));
+    float *xf = malloc(cols * sizeof(float));
     float *y = malloc((size_t)NV * ROWS * sizeof(float));
     for (int v = 0; v < NV; v++) {
-        for (int i = 0; i < COLS; i++)
+        for (size_t i = 0; i < cols; i++)
             xf[i] = rndf(-1.0f, 1.0f);
-        janas_q8k_quantize(xf, x + (size_t)v * NB, COLS);
+        janas_q8k_quantize(xf, x + (size_t)v * nb, cols);
     }
     struct janas_pool *pool = janas_pool_create(3, NULL);
     for (unsigned k = 0; k < sizeof(types) / sizeof(*types); k++) {
         int type = types[k];
-        size_t bs = janas_qtype_block_size(type), rb = NB * bs;
+        size_t bs = janas_qtype_block_size(type), rb = nb * bs;
         unsigned char *w = malloc(ROWS * rb);
         for (size_t i = 0; i < ROWS * rb; i++)
             w[i] = (unsigned char)rnd();
@@ -402,16 +404,16 @@ static void test_matvec_multi_b32(void)
                                           .x = x,
                                           .y = y,
                                           .rows = ROWS,
-                                          .cols = COLS,
+                                          .cols = cols,
                                           .n_vec = (size_t)nv};
             janas_matvec_q4k_group(pool, &t, 1);
             for (int v = 0; v < nv; v++)
                 for (int r = 0; r < ROWS; r++) {
                     float ref = janas_dot(type, w + (size_t)r * rb,
-                                          x + (size_t)v * NB, NB);
+                                          x + (size_t)v * nb, nb);
                     CHECK(y[v * ROWS + r] == ref,
-                          "type %d nv %d v %d row %d: %g vs %g", type, nv, v, r,
-                          y[v * ROWS + r], ref);
+                          "type %d cols %zu nv %d v %d row %d: %g vs %g", type,
+                          cols, nv, v, r, y[v * ROWS + r], ref);
                 }
         }
         free(w);
@@ -420,6 +422,13 @@ static void test_matvec_multi_b32(void)
     free(x);
     free(xf);
     free(y);
+}
+
+static void test_matvec_multi_b32(void)
+{
+    static const size_t cols[] = {256, 768, 2048, 8192, 8448};
+    for (unsigned c = 0; c < sizeof(cols) / sizeof(*cols); c++)
+        test_matvec_multi_b32_cols(cols[c]);
 }
 
 /* Q5_0 into Q8_0 (gguf2jns's rewrite): a block made by hand, then random

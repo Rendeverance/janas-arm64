@@ -259,6 +259,14 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
                      size_t x_stride, size_t nv, size_t nb, float *out,
                      size_t out_stride);
 
+/* janas_dot_multi for nr rows of row_bytes each: row i's result for vector
+   v at out[i + v * out_stride]. The same bits; on ARM64 with I8MM, two rows
+   against two vectors at once where the format allows. */
+void janas_dot_multi_rows(int type, const void *w, size_t row_bytes,
+                          size_t nr, const struct janas_block_q8k *x,
+                          size_t x_stride, size_t nv, size_t nb, float *out,
+                          size_t out_stride);
+
 /* Float helpers, AVX2 when available: dot product and y += a * x. */
 float janas_dot_f32(const float *a, const float *b, size_t n);
 void janas_axpy_f32(float *y, float a, const float *x, size_t n);

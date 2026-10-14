@@ -368,6 +368,60 @@ static void test_matvec_multi(void)
     free(x);
 }
 
+/* The formats in blocks of 32 through the group product, more vectors and
+   rows than one call takes at once and odd counts of both (ARM64 with I8MM
+   takes two rows by two vectors, the rest one by one): every result must
+   match the single-vector kernel bit for bit. */
+static void test_matvec_multi_b32(void)
+{
+    enum { ROWS = 301, COLS = 2048, NB = COLS / JANAS_QK, NV = 5 };
+    static const int types[] = {JANAS_Q4_0, JANAS_IQ4_NL, JANAS_Q8_0};
+    struct janas_block_q8k *x = malloc((size_t)NV * NB * sizeof(*x));
+    float *xf = malloc(COLS * sizeof(float));
+    float *y = malloc((size_t)NV * ROWS * sizeof(float));
+    for (int v = 0; v < NV; v++) {
+        for (int i = 0; i < COLS; i++)
+            xf[i] = rndf(-1.0f, 1.0f);
+        janas_q8k_quantize(xf, x + (size_t)v * NB, COLS);
+    }
+    struct janas_pool *pool = janas_pool_create(3, NULL);
+    for (unsigned k = 0; k < sizeof(types) / sizeof(*types); k++) {
+        int type = types[k];
+        size_t bs = janas_qtype_block_size(type), rb = NB * bs;
+        unsigned char *w = malloc(ROWS * rb);
+        for (size_t i = 0; i < ROWS * rb; i++)
+            w[i] = (unsigned char)rnd();
+        /* every block of 32 begins with its fp16 scale: a finite one */
+        for (size_t b = 0; b < ROWS * rb / (bs / 8); b++) {
+            uint16_t d = janas_fp32_to_fp16(rndf(0.001f, 0.1f));
+            memcpy(w + b * (bs / 8), &d, 2);
+        }
+        for (int nv = 1; nv <= NV; nv++) {
+            struct janas_matvec_task t = {.type = type,
+                                          .w = w,
+                                          .x = x,
+                                          .y = y,
+                                          .rows = ROWS,
+                                          .cols = COLS,
+                                          .n_vec = (size_t)nv};
+            janas_matvec_q4k_group(pool, &t, 1);
+            for (int v = 0; v < nv; v++)
+                for (int r = 0; r < ROWS; r++) {
+                    float ref = janas_dot(type, w + (size_t)r * rb,
+                                          x + (size_t)v * NB, NB);
+                    CHECK(y[v * ROWS + r] == ref,
+                          "type %d nv %d v %d row %d: %g vs %g", type, nv, v,
+                          r, y[v * ROWS + r], ref);
+                }
+        }
+        free(w);
+    }
+    janas_pool_destroy(pool);
+    free(x);
+    free(xf);
+    free(y);
+}
+
 /*
  * Q4_K quantization: round trip on Gaussian-like and heavy-tailed weights.
  * The error relative to the weights' spread must stay near what 4 bits with
@@ -1202,6 +1256,7 @@ int main(void)
     test_matvec();
     test_matvec_group();
     test_matvec_multi();
+    test_matvec_multi_b32();
     test_dot_multi();
     test_det();
     test_dot_q5k_q8_0();

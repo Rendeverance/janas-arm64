@@ -136,9 +136,8 @@ static void group_worker(void *arg, int tid, int n_threads)
             } else if (nv == 1) {
                 janas_dot_rows(k->type, w0, row_bytes, k->x, nb, nr, k->y + r0);
             } else {
-                for (size_t i = 0; i < nr; i++)
-                    janas_dot_multi(k->type, w0 + i * row_bytes, k->x, xs, nv,
-                                    nb, k->y + r0 + i, ys);
+                janas_dot_multi_rows(k->type, w0, row_bytes, nr, k->x, xs, nv,
+                                     nb, k->y + r0, ys);
             }
             g0 = end;
         }

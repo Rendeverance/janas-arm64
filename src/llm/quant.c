@@ -1219,6 +1219,7 @@ static float e8m0_tab[256];
 #if defined(__aarch64__)
 #include "quant_neon.h"
 #include "quant_neon_k.h"
+#include "quant_neon_mm.h"
 #endif
 
 typedef float (*dot_fn)(const struct janas_block_q4k *,
@@ -1264,6 +1265,7 @@ typedef void (*dotn6p_fn)(const struct janas_block_q6kp *, const uint8_t *,
 static dotn6p_fn dot6p_impl; /* NULL: the scalar reference */
 static const char *dot_name = "ref";
 static int use_vnni;
+static int use_i8mm; /* ARM64: two rows by two vectors with SMMLA */
 
 /* JANAS_KERNELS=ref, read once in dot_kernels_init (janas_kernels_ref). */
 static int kernels_ref;
@@ -1327,6 +1329,11 @@ __attribute__((constructor)) static void dot_kernels_init(void)
         dotxs_impl = iq4xs_dot_neon;
         dotmx_impl = mxfp4_dot_neon;
         dot_name = "neon-dotprod";
+        /* JANAS_KERNELS=dotprod: without the matrix instructions */
+        if (janas_cpu_arm_i8mm() && !(k && !strcmp(k, "dotprod"))) {
+            use_i8mm = 1;
+            dot_name = "neon-i8mm";
+        }
     }
 #endif
 }
@@ -1874,4 +1881,53 @@ void janas_dot_multi(int type, const void *w, const struct janas_block_q8k *x,
 #endif
     for (; v < nv; v++)
         out[v * out_stride] = janas_dot(type, w, x + v * x_stride, nb);
+}
+
+void janas_dot_multi_rows(int type, const void *w, size_t row_bytes,
+                          size_t nr, const struct janas_block_q8k *x,
+                          size_t x_stride, size_t nv, size_t nb, float *out,
+                          size_t out_stride)
+{
+    const char *wb = w;
+    size_t v = 0;
+#if defined(__aarch64__)
+    /* where it pays, measured on a Snapdragon X (Oryon): 4-bit weights,
+       which every vector pair then shares unpacked, on 2 to 4 vectors. Q8_0
+       has nothing to unpack, and from 5 vectors janas_dot_multi's reuse of
+       the weights across all of them wins */
+    if (use_i8mm && nv >= 2 && nv <= 4 && nr >= 2 && nb <= NEON_MM_MAX_NB &&
+        (type == JANAS_Q4_0 || type == JANAS_IQ4_NL)) {
+        int8_t xi[NEON_MM_MAX_NB * 8 * 64] __attribute__((aligned(16)));
+        for (; v + 1 < nv; v += 2) {
+            const struct janas_block_q8k *a = x + v * x_stride;
+            const struct janas_block_q8k *b = a + x_stride;
+            neon_mm_interleave(a, b, nb, xi);
+            size_t i = 0;
+            for (; i + 1 < nr; i += 2) {
+                const void *r0 = wb + i * row_bytes;
+                const void *r1 = wb + (i + 1) * row_bytes;
+                float o[4];
+                if (type == JANAS_Q8_0)
+                    neon_mm_q8_0(r0, r1, a, b, xi, nb, o);
+                else
+                    neon_mm_nib(r0, r1, a, b, xi, nb,
+                                type == JANAS_Q4_0 ? janas_q4_0_values
+                                                   : janas_iq4_values,
+                                o);
+                out[i + v * out_stride] = o[0];
+                out[i + (v + 1) * out_stride] = o[1];
+                out[i + 1 + v * out_stride] = o[2];
+                out[i + 1 + (v + 1) * out_stride] = o[3];
+            }
+            if (i < nr) /* an odd row: both vectors, one row */
+                janas_dot_multi(type, wb + i * row_bytes, a, x_stride, 2, nb,
+                                out + i + v * out_stride, out_stride);
+        }
+    }
+#endif
+    if (v < nv) /* the vectors left: every row */
+        for (size_t i = 0; i < nr; i++)
+            janas_dot_multi(type, wb + i * row_bytes, x + v * x_stride,
+                            x_stride, nv - v, nb, out + i + v * out_stride,
+                            out_stride);
 }

@@ -1931,6 +1931,7 @@ void janas_dot_multi_rows(int type, const void *w, size_t row_bytes, size_t nr,
             type == JANAS_Q4_0 ? janas_q4_0_values : janas_iq4_values;
         int8_t xi[4][NEON_MM_MAX_NB * 512] __attribute__((aligned(16)));
         int8_t wi[NEON_MM_MAX_NB * 512] __attribute__((aligned(16)));
+        float ds[NEON_MM_MAX_NB * 16] __attribute__((aligned(16)));
         for (; v < nv;) {
             size_t g = nv - v < 8 ? nv - v : 8, np = (g + 1) / 2;
             const struct janas_block_q8k *xv = x + v * x_stride;
@@ -1943,12 +1944,12 @@ void janas_dot_multi_rows(int type, const void *w, size_t row_bytes, size_t nr,
             for (; i + 1 < nr; i += 2) {
                 const void *r0 = wb + i * row_bytes;
                 const void *r1 = wb + (i + 1) * row_bytes;
-                neon_mm_unpack(r0, r1, nb, lv, wi);
+                neon_mm_unpack(r0, r1, nb, lv, wi, ds);
                 for (size_t p = 0; p < np; p++) {
                     size_t u = 2 * p + 1 < g ? 2 * p + 1 : 2 * p;
                     float o[4];
                     float *y = out + i + (v + 2 * p) * out_stride;
-                    neon_mm_nib_pre(r0, r1, wi, xv + 2 * p * x_stride,
+                    neon_mm_nib_pre(wi, ds, xv + 2 * p * x_stride,
                                     xv + u * x_stride, xi[p], nb, o);
                     y[0] = o[0];
                     y[1] = o[2];

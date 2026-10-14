@@ -125,11 +125,21 @@ static NEON_MM void neon_mm_nib(const struct janas_block_iq4nl *w0,
 }
 
 /* A pair of rows unpacked once for several pairs of vectors: per block of
-   32 the four operands neon_mm_nib makes, 64 bytes, into wi. */
+   32 the four operands neon_mm_nib makes, 64 bytes, into wi; per block of
+   256 the two rows' scales as floats, d0[0], d0[1], d1[0], d1[1] of
+   neon_mm_nib, into ds (16 floats). */
 static NEON_MM void neon_mm_unpack(const struct janas_block_iq4nl *w0,
                                    const struct janas_block_iq4nl *w1,
-                                   size_t nb, const int8_t *lv, int8_t *wi)
+                                   size_t nb, const int8_t *lv, int8_t *wi,
+                                   float *ds)
 {
+    for (size_t s = 0; s < nb; s++) {
+        const struct janas_block_iq4nl *r0 = w0 + 8 * s, *r1 = w1 + 8 * s;
+        vst1q_f32(ds + 16 * s, neon_h2f4(&r0[0].d, sizeof(*r0)));
+        vst1q_f32(ds + 16 * s + 4, neon_h2f4(&r0[4].d, sizeof(*r0)));
+        vst1q_f32(ds + 16 * s + 8, neon_h2f4(&r1[0].d, sizeof(*r1)));
+        vst1q_f32(ds + 16 * s + 12, neon_h2f4(&r1[4].d, sizeof(*r1)));
+    }
     const int8x16_t levels = vld1q_s8(lv);
     const uint8x16_t m4 = vdupq_n_u8(15);
     for (size_t k = 0; k < 8 * nb; k++) {
@@ -145,11 +155,9 @@ static NEON_MM void neon_mm_unpack(const struct janas_block_iq4nl *w0,
     }
 }
 
-/* neon_mm_nib on rows already unpacked into wi (neon_mm_unpack); w0, w1
-   give the scales. The same steps in the same order: the same results. */
-static NEON_MM void neon_mm_nib_pre(const struct janas_block_iq4nl *w0,
-                                    const struct janas_block_iq4nl *w1,
-                                    const int8_t *wi,
+/* neon_mm_nib on rows already unpacked into wi and ds (neon_mm_unpack).
+   Same steps in the same order as neon_mm_nib, so the same results. */
+static NEON_MM void neon_mm_nib_pre(const int8_t *wi, const float *ds,
                                     const struct janas_block_q8k *a,
                                     const struct janas_block_q8k *b,
                                     const int8_t *xi, size_t nb, float out[4])
@@ -158,7 +166,6 @@ static NEON_MM void neon_mm_nib_pre(const struct janas_block_iq4nl *w0,
     for (int p = 0; p < 4; p++)
         acc[p][0] = acc[p][1] = vdupq_n_f32(0.0f);
     for (size_t s = 0; s < nb; s++) {
-        const struct janas_block_iq4nl *r0 = w0 + 8 * s, *r1 = w1 + 8 * s;
         int32x4_t dots[8];
         for (int k = 0; k < 8; k++) {
             const int8_t *u = wi + (s * 8 + (size_t)k) * 64;
@@ -166,10 +173,10 @@ static NEON_MM void neon_mm_nib_pre(const struct janas_block_iq4nl *w0,
                 neon_mm_block(vld1q_s8(u), vld1q_s8(u + 16), vld1q_s8(u + 32),
                               vld1q_s8(u + 48), xi + (s * 8 + (size_t)k) * 64);
         }
-        float32x4_t d0[2] = {neon_h2f4(&r0[0].d, sizeof(*r0)),
-                             neon_h2f4(&r0[4].d, sizeof(*r0))};
-        float32x4_t d1[2] = {neon_h2f4(&r1[0].d, sizeof(*r1)),
-                             neon_h2f4(&r1[4].d, sizeof(*r1))};
+        float32x4_t d0[2] = {vld1q_f32(ds + 16 * s),
+                             vld1q_f32(ds + 16 * s + 4)};
+        float32x4_t d1[2] = {vld1q_f32(ds + 16 * s + 8),
+                             vld1q_f32(ds + 16 * s + 12)};
         float32x4_t xa[2] = {vld1q_f32(a[s].d32), vld1q_f32(a[s].d32 + 4)};
         float32x4_t xb[2] = {vld1q_f32(b[s].d32), vld1q_f32(b[s].d32 + 4)};
         neon_mm_acc(dots, d0, d1, xa, xb, acc);

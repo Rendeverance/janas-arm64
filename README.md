@@ -43,14 +43,18 @@ Windows on ARM64, with the llvm-mingw toolchain on the path:
 
 ## Status
 
-Work in progress. The quantised dot products are bit exact with the scalar
-references and are offered upstream first
-([prabanta-dev/janas#32](https://github.com/prabanta-dev/janas/pull/32)), with
-the `janas_free` fix
-([#31](https://github.com/prabanta-dev/janas/pull/31)). The float kernels for
-attention, DeltaNet and the rest still reduce in a different order from the
-AVX2 path in a few places, so their results can differ in the last bit; they
-are being fixed before they are offered upstream.
+Work in progress. Every NEON kernel is written to give the same bits as the
+AVX2 path: the quantised dot products follow the scalar references, and the
+float kernels (attention, DeltaNet, the norms, the router, the per-layer
+embeddings) follow the AVX2 order of operations. Tests check the dot
+products, attention, DeltaNet and the softmax sum bit for bit against that
+order; the router, norm and per-layer kernels are not reachable from a test
+without a loaded model yet. Not yet compared with a run on x86.
+
+Upstream so far: the quantised dot products
+([prabanta-dev/janas#32](https://github.com/prabanta-dev/janas/pull/32)), the
+`janas_free` fix ([#31](https://github.com/prabanta-dev/janas/pull/31)) and the
+Windows on ARM64 build ([#33](https://github.com/prabanta-dev/janas/pull/33)).
 
 ## Licence
 

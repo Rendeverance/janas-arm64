@@ -15,6 +15,7 @@
 
 #include "common/pool.h"
 #include "llm/matvec.h"
+#include "llm/model_impl.h"
 #include "llm/quant.h"
 #include "llm/vmath.h"
 
@@ -430,6 +431,109 @@ static void test_matvec_multi_b32(void)
     for (unsigned c = 0; c < sizeof(cols) / sizeof(*cols); c++)
         test_matvec_multi_b32_cols(cols[c]);
 }
+
+#if defined(__aarch64__)
+/* janas_hsum8's pairing of eight lanes */
+static float hsum8_order(const float *t)
+{
+    return ((t[0] + t[4]) + (t[2] + t[6])) + ((t[1] + t[5]) + (t[3] + t[7]));
+}
+
+/* dot_f32_avx2's arithmetic written out lane by lane: two 8-lane fused
+   accumulators over 16 floats at a time, then one over 8, the two added lane
+   for lane, janas_hsum8's pairing, and the tail fused. */
+static float dot_f32_avx2_order(const float *a, const float *b, size_t n)
+{
+    float s0[8] = {0}, s1[8] = {0}, t[8];
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16)
+        for (int l = 0; l < 8; l++) {
+            s0[l] = fmaf(a[i + l], b[i + l], s0[l]);
+            s1[l] = fmaf(a[i + 8 + l], b[i + 8 + l], s1[l]);
+        }
+    for (; i + 8 <= n; i += 8)
+        for (int l = 0; l < 8; l++)
+            s0[l] = fmaf(a[i + l], b[i + l], s0[l]);
+    for (int l = 0; l < 8; l++)
+        t[l] = s0[l] + s1[l];
+    float r = hsum8_order(t);
+    for (; i < n; i++)
+        r = fmaf(a[i], b[i], r);
+    return r;
+}
+
+/* The ARM64 float helpers against the AVX2 path's order, to the bit, for
+   every length up to 100 and some long ones (each tail and loop mix). */
+static void test_f32_helpers_order(void)
+{
+    if (janas_kernels_ref())
+        return;
+    enum { N = 4103 };
+    float *a = malloc(N * sizeof(float)), *b = malloc(N * sizeof(float));
+    float *y = malloc(N * sizeof(float)), *z = malloc(N * sizeof(float));
+    static const size_t big[] = {256, 1000, 2048, 4103};
+    for (int round = 0; round < 104; round++) {
+        size_t n = round < 100 ? (size_t)round + 1 : big[round - 100];
+        for (size_t i = 0; i < n; i++) {
+            a[i] = rndf(-2.0f, 2.0f);
+            b[i] = rndf(-2.0f, 2.0f);
+            y[i] = z[i] = rndf(-2.0f, 2.0f);
+        }
+        float got = janas_dot_f32(a, b, n), want = dot_f32_avx2_order(a, b, n);
+        CHECK(memcmp(&got, &want, 4) == 0, "dot_f32 n %zu: %.9g vs %.9g", n,
+              got, want);
+        float k = rndf(-1.0f, 1.0f);
+        janas_axpy_f32(y, k, a, n);
+        for (size_t i = 0; i < n; i++)
+            z[i] = fmaf(k, a[i], z[i]);
+        CHECK(memcmp(y, z, n * sizeof(float)) == 0, "axpy_f32 n %zu differs",
+              n);
+    }
+    free(a);
+    free(b);
+    free(y);
+    free(z);
+}
+
+/* janas_m_exp_sum as on AVX2: exp_sum_avx2's eight lanes over whole groups
+   of 8 (janas_exp8 is janas_exp_det lane by lane), janas_hsum8's pairing,
+   then the rest in double with expf. */
+static double exp_sum_avx2_order(const float *l, uint32_t n, float mx)
+{
+    float acc[8] = {0};
+    uint32_t i = 0;
+    for (; i + 8 <= n; i += 8)
+        for (int k = 0; k < 8; k++)
+            acc[k] += janas_exp_det(l[i + k] - mx);
+    double sum = hsum8_order(acc);
+    for (; i < n; i++)
+        sum += expf(l[i] - mx);
+    return sum;
+}
+
+static void test_exp_sum_order(void)
+{
+    if (janas_kernels_ref())
+        return;
+    enum { N = 4103 };
+    float *l = malloc(N * sizeof(float));
+    static const uint32_t big[] = {256, 1000, 2048, 4103};
+    for (int round = 0; round < 104; round++) {
+        uint32_t n = round < 100 ? (uint32_t)round + 1 : big[round - 100];
+        float mx = -INFINITY;
+        for (uint32_t i = 0; i < n; i++) {
+            l[i] = rndf(-20.0f, 5.0f);
+            if (l[i] > mx)
+                mx = l[i];
+        }
+        double got = janas_m_exp_sum(l, n, mx);
+        double want = exp_sum_avx2_order(l, n, mx);
+        CHECK(memcmp(&got, &want, sizeof(got)) == 0,
+              "exp_sum n %u: %.17g vs %.17g", n, got, want);
+    }
+    free(l);
+}
+#endif
 
 /* Q5_0 into Q8_0 (gguf2jns's rewrite): a block made by hand, then random
    blocks packed back from the Q8_0 they became, byte for byte. */
@@ -1304,6 +1408,10 @@ int main(void)
     test_matvec_group();
     test_matvec_multi();
     test_matvec_multi_b32();
+#if defined(__aarch64__)
+    test_f32_helpers_order();
+    test_exp_sum_order();
+#endif
     test_q5_0_to_q8_0();
     test_dot_multi();
     test_det();

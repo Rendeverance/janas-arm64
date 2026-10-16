@@ -188,9 +188,10 @@ static float dot_f16_neon(const uint16_t *w, const float *x, uint32_t n)
             vfmaq_f32(a2, vcvt_f32_f16(vget_low_f16(h1)), vld1q_f32(x + i + 8));
         a3 = vfmaq_f32(a3, vcvt_high_f32_f16(h1), vld1q_f32(x + i + 12));
     }
-    float s = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
+    /* a0 a1 and a2 a3 are dot_f16_avx2's a0 and a1 */
+    float s = janas_hsum4x2(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
     for (; i < n; i++)
-        s += janas_fp16_to_fp32(w[i]) * x[i];
+        s = fmaf(janas_fp16_to_fp32(w[i]), x[i], s);
     return s;
 }
 #endif

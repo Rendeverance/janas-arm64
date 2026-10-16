@@ -222,6 +222,15 @@ static inline float32x4_t janas_gelu_mul_det4(float32x4_t g, float32x4_t u)
     float32x4_t d = vaddq_f32(vdupq_n_f32(1.0f), janas_exp4(a));
     return vmulq_f32(vmulq_f32(g, janas_recip4(d)), u);
 }
+
+/* janas_hsum8 of lanes 0-3 in a and 4-7 in b, in its order:
+   ((0 + 4) + (2 + 6)) + ((1 + 5) + (3 + 7)). */
+static inline float janas_hsum4x2(float32x4_t a, float32x4_t b)
+{
+    float32x4_t s = vaddq_f32(a, b);
+    float32x2_t t = vadd_f32(vget_low_f32(s), vget_high_f32(s));
+    return vget_lane_f32(t, 0) + vget_lane_f32(t, 1);
+}
 #endif
 
 #endif

@@ -6,9 +6,11 @@
  *
  * The sixteen-bit paths (int16 queries times int8 keys; int16 weights times
  * int8 values) sum exact integers, so they give the reference's numbers bit
- * for bit. The float paths sum each row in vector lanes, the weights with
- * janas_exp4 (four lanes of janas_exp8). head_dim is a multiple of 8 on
- * every model Janas runs; a tail is handled too.
+ * for bit. The float paths are the AVX2 ones with two registers of four lanes
+ * for each of eight: the same products in the same lanes, the eight lanes
+ * summed as janas_hsum8 does, the weights with janas_exp4 (four lanes of
+ * janas_exp8). head_dim is a multiple of 8 (janas_attn_create); a tail is
+ * handled too.
  */
 #include <arm_neon.h>
 
@@ -57,7 +59,7 @@ static void att_scores_f32_neon(const float *const *q, const void *Kv,
                     a1 = vfmaq_f32(a1, vld1q_f32(qs + i + 4),
                                    vcvtq_f32_s32(vmovl_high_s16(kk)));
                 }
-                float sum = vaddvq_f32(vaddq_f32(a0, a1));
+                float sum = janas_hsum4x2(a0, a1);
                 for (; i < hd; i++)
                     sum += qs[i] * (float)k[i];
                 sc[s][t] = sum * scale * ks[t];
@@ -70,7 +72,7 @@ static void att_scores_f32_neon(const float *const *q, const void *Kv,
                     a1 = vfmaq_f32(a1, vld1q_f32(qs + i + 4),
                                    vcvtq_f32_s32(vmovl_high_s16(kk)));
                 }
-                float sum = vaddvq_f32(vaddq_f32(a0, a1));
+                float sum = janas_hsum4x2(a0, a1);
                 for (; i < hd; i++)
                     sum += qs[i] * (float)k[i];
                 sc[s][t] = sum * scale * ks[t];

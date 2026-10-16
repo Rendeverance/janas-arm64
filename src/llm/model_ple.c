@@ -117,9 +117,9 @@ static float dot_bf16_neon(const uint16_t *w, const float *x, uint32_t n)
         a0 = vfmaq_f32(a0, w0, vld1q_f32(x + i));
         a1 = vfmaq_f32(a1, w1, vld1q_f32(x + i + 4));
     }
-    float r = vaddvq_f32(vaddq_f32(a0, a1));
+    float r = janas_hsum4x2(a0, a1);
     for (; i < n; i++)
-        r += janas_u2f((uint32_t)w[i] << 16) * x[i];
+        r = fmaf(janas_u2f((uint32_t)w[i] << 16), x[i], r);
     return r;
 }
 
@@ -141,9 +141,9 @@ static void dot4_bf16_neon(const uint16_t *w, const float *const x[4],
         }
     }
     for (int t = 0; t < 4; t++) {
-        float r = vaddvq_f32(vaddq_f32(a0[t], a1[t]));
+        float r = janas_hsum4x2(a0[t], a1[t]);
         for (uint32_t k = i; k < n; k++)
-            r += janas_u2f((uint32_t)w[k] << 16) * x[t][k];
+            r = fmaf(janas_u2f((uint32_t)w[k] << 16), x[t][k], r);
         out[t] = r;
     }
 }
@@ -266,38 +266,46 @@ dot4_f32_avx2(const float *w, const float *const x[4], uint32_t n, float out[4])
     }
 }
 #elif defined(__aarch64__)
+/* dot_f32_avx2 and dot4_f32_avx2 with two registers of four lanes for each
+   of eight: a0 a1 are its a0, a2 a3 its a1 */
 static float dot_f32_neon_ple(const float *w, const float *x, uint32_t n)
 {
-    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0;
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
     uint32_t i = 0;
-    for (; i + 8 <= n; i += 8) {
+    for (; i + 16 <= n; i += 16) {
         a0 = vfmaq_f32(a0, vld1q_f32(w + i), vld1q_f32(x + i));
         a1 = vfmaq_f32(a1, vld1q_f32(w + i + 4), vld1q_f32(x + i + 4));
+        a2 = vfmaq_f32(a2, vld1q_f32(w + i + 8), vld1q_f32(x + i + 8));
+        a3 = vfmaq_f32(a3, vld1q_f32(w + i + 12), vld1q_f32(x + i + 12));
     }
-    float r = vaddvq_f32(vaddq_f32(a0, a1));
+    float r = janas_hsum4x2(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
     for (; i < n; i++)
-        r += w[i] * x[i];
+        r = fmaf(w[i], x[i], r);
     return r;
 }
 
 static void dot4_f32_neon(const float *w, const float *const x[4], uint32_t n,
                           float out[4])
 {
-    float32x4_t a0[4], a1[4];
+    float32x4_t a0[4], a1[4], a2[4], a3[4];
     for (int t = 0; t < 4; t++)
-        a0[t] = a1[t] = vdupq_n_f32(0.0f);
+        a0[t] = a1[t] = a2[t] = a3[t] = vdupq_n_f32(0.0f);
     uint32_t i = 0;
-    for (; i + 8 <= n; i += 8) {
+    for (; i + 16 <= n; i += 16) {
         float32x4_t w0 = vld1q_f32(w + i), w1 = vld1q_f32(w + i + 4);
+        float32x4_t w2 = vld1q_f32(w + i + 8), w3 = vld1q_f32(w + i + 12);
         for (int t = 0; t < 4; t++) {
             a0[t] = vfmaq_f32(a0[t], w0, vld1q_f32(x[t] + i));
             a1[t] = vfmaq_f32(a1[t], w1, vld1q_f32(x[t] + i + 4));
+            a2[t] = vfmaq_f32(a2[t], w2, vld1q_f32(x[t] + i + 8));
+            a3[t] = vfmaq_f32(a3[t], w3, vld1q_f32(x[t] + i + 12));
         }
     }
     for (int t = 0; t < 4; t++) {
-        float r = vaddvq_f32(vaddq_f32(a0[t], a1[t]));
+        float r =
+            janas_hsum4x2(vaddq_f32(a0[t], a2[t]), vaddq_f32(a1[t], a3[t]));
         for (uint32_t k = i; k < n; k++)
-            r += w[k] * x[t][k];
+            r = fmaf(w[k], x[t][k], r);
         out[t] = r;
     }
 }

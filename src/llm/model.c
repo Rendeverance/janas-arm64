@@ -642,7 +642,7 @@ static double exp_sum_neon(const float *l, uint32_t n, float mx, uint32_t *done)
         a1 = vaddq_f32(a1, janas_exp4(vsubq_f32(vld1q_f32(l + i + 4), vm)));
     }
     *done = i;
-    return vaddvq_f32(vaddq_f32(a0, a1));
+    return janas_hsum4x2(a0, a1);
 }
 #endif
 

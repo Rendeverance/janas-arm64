@@ -31,6 +31,7 @@
 #include "common/pool.h"
 #include "llm/attention.h"
 #include "llm/quant.h"
+#include "llm/vmath.h"
 
 static int failures;
 static uint64_t checksum = 0xCBF29CE484222325ull;
@@ -254,6 +255,118 @@ static void run16(struct janas_pool *pool, uint32_t n_head, uint32_t n_kv,
     janas_attn_destroy(a);
 }
 
+#if defined(__aarch64__)
+static float hsum8_order(const float *t)
+{
+    return ((t[0] + t[4]) + (t[2] + t[6])) + ((t[1] + t[5]) + (t[3] + t[7]));
+}
+
+/*
+ * One token, one head, one chunk of nt positions on the AVX2 float path,
+ * lane by lane: each score an 8-lane fused sum over head_dim with
+ * janas_hsum8's pairing; weights by janas_exp8 (janas_exp_det per lane)
+ * summed in lane t % 8; each output lane a fused sum over the positions;
+ * the merge of the one chunk (janas_axpy_f32 with a weight of 1).
+ */
+static void attn_avx2_order(const float *q, const void *K, const float *ks,
+                            const void *V, const float *vs, uint32_t nt,
+                            uint32_t hd, float scale, int kv16, float *out)
+{
+    float row[256], acc[8] = {0}, m = -INFINITY;
+    for (uint32_t t = 0; t < nt; t++) {
+        float a[8] = {0};
+        for (uint32_t i = 0; i < hd; i += 8)
+            for (int l = 0; l < 8; l++) {
+                size_t x = (size_t)t * hd + i + l;
+                float k = kv16 ? (float)((const int16_t *)K)[x]
+                               : (float)((const int8_t *)K)[x];
+                a[l] = fmaf(q[i + l], k, a[l]);
+            }
+        row[t] = hsum8_order(a) * scale * ks[t];
+        if (row[t] > m)
+            m = row[t];
+    }
+    for (uint32_t t = 0; t < nt; t++) {
+        float d = row[t] - m;
+        row[t] = d >= -80.0f ? janas_exp_det(d) : 0.0f;
+        acc[t % 8] += row[t];
+    }
+    float sum = hsum8_order(acc), inv = 1.0f / sum;
+    for (uint32_t t = 0; t < nt; t++)
+        row[t] *= vs[t];
+    for (uint32_t i = 0; i < hd; i++) {
+        float a = 0.0f;
+        for (uint32_t t = 0; t < nt; t++) {
+            size_t x = (size_t)t * hd + i;
+            float v = kv16 ? (float)((const int16_t *)V)[x]
+                           : (float)((const int8_t *)V)[x];
+            a = fmaf(row[t], v, a);
+        }
+        out[i] = fmaf(1.0f, a, 0.0f) * inv;
+    }
+}
+
+/* The NEON float path against the AVX2 order, to the bit, for eight- and
+   sixteen-bit keys and values, several head sizes and every tail of 8. */
+static void test_avx2_order(struct janas_pool *pool)
+{
+    if (janas_kernels_ref())
+        return;
+    static const uint32_t hds[] = {8, 16, 64, 128, 256};
+    static const uint32_t lens[] = {1,  2,  3,  5,   7,   8,   9,  15,
+                                    16, 17, 31, 100, 129, 255, 256};
+    int bad = 0;
+    for (int kv16 = 0; kv16 < 2; kv16++)
+        for (unsigned h = 0; h < sizeof(hds) / sizeof(*hds); h++) {
+            uint32_t hd = hds[h];
+            struct janas_attn *a = janas_attn_create(
+                1, 1, hd, 256, janas_pool_size(pool), JANAS_ATTN_FLOAT);
+            janas_attn_set_kv16(a, kv16);
+            if (janas_attn_scores_mode(a) != JANAS_ATTN_FLOAT) {
+                janas_attn_destroy(a); /* JANAS_ATTN asked otherwise */
+                continue;
+            }
+            float scale = 1.0f / sqrtf((float)hd);
+            janas_attn_set_scale(a, scale);
+            size_t kv = (size_t)256 * hd;
+            int16_t *K = malloc(kv * 2), *V = malloc(kv * 2);
+            float ks[256], vs[256], q[256], got[256], want[256];
+            for (size_t i = 0; i < kv; i++) {
+                if (kv16) {
+                    K[i] = (int16_t)(int)rndf(-32767, 32767);
+                    V[i] = (int16_t)(int)rndf(-32767, 32767);
+                } else {
+                    ((int8_t *)K)[i] = (int8_t)(int)rndf(-127, 127);
+                    ((int8_t *)V)[i] = (int8_t)(int)rndf(-127, 127);
+                }
+            }
+            float div = kv16 ? 258.0f : 1.0f;
+            for (int t = 0; t < 256; t++) {
+                ks[t] = rndf(0.001f, 0.02f) / div;
+                vs[t] = rndf(0.001f, 0.02f) / div;
+            }
+            for (unsigned n = 0; n < sizeof(lens) / sizeof(*lens); n++) {
+                for (uint32_t i = 0; i < hd; i++)
+                    q[i] = rndf(-3, 3);
+                janas_attn_run(a, pool, q, (const int8_t *)K, ks,
+                               (const int8_t *)V, vs, 1, lens[n] - 1, got);
+                attn_avx2_order(q, K, ks, V, vs, lens[n], hd, scale, kv16,
+                                want);
+                if (memcmp(got, want, hd * sizeof(float))) {
+                    bad++;
+                    CHECK(0, "%s-bit dim %u, %u positions: not the AVX2 order",
+                          kv16 ? "16" : "8", hd, lens[n]);
+                }
+            }
+            free(K);
+            free(V);
+            janas_attn_destroy(a);
+        }
+    printf("neon float path against the AVX2 order: %s\n",
+           bad ? "DIFFERS" : "bit-identical");
+}
+#endif
+
 int main(void)
 {
     /* a test that deadlocks must fail, not hold the suite for ever */
@@ -272,6 +385,9 @@ int main(void)
     run16(pool, 16, 8, 256, 2048, 700, 64, 256); /* a window of 256 */
     run16(pool, 16, 1, 512, 1024, 250, 17, 0);   /* Gemma 4's full layers */
     run16(pool, 16, 8, 256, 2048, 1030, 5, 1024);
+#if defined(__aarch64__)
+    test_avx2_order(pool);
+#endif
     janas_pool_destroy(pool);
     if (failures) {
         fprintf(stderr, "%d failures\n", failures);

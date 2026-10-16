@@ -1652,25 +1652,32 @@ axpy_f32_avx2(float *y, float a, const float *x, size_t n)
 #endif
 
 #if defined(__aarch64__)
-/* Dot product and y += a * x on NEON. */
+/* dot_f32_avx2 on NEON, step for step: each 8-lane register is two of four
+   lanes (lo = lanes 0-3, hi = 4-7), the same 16- then 8-wide loops, s0 + s1
+   lane for lane, janas_hsum8's pairing ((0+4)+(2+6)) + ((1+5)+(3+7)) by
+   neon_sum8, and the tail fused as the fma target fuses it there. */
 static float dot_f32_neon(const float *a, const float *b, size_t n)
 {
-    float32x4_t s0 = vdupq_n_f32(0.0f), s1 = s0, s2 = s0, s3 = s0;
+    float32x4_t s0l = vdupq_n_f32(0.0f), s0h = s0l, s1l = s0l, s1h = s0l;
     size_t i = 0;
     for (; i + 16 <= n; i += 16) {
-        s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
-        s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
-        s2 = vfmaq_f32(s2, vld1q_f32(a + i + 8), vld1q_f32(b + i + 8));
-        s3 = vfmaq_f32(s3, vld1q_f32(a + i + 12), vld1q_f32(b + i + 12));
+        s0l = vfmaq_f32(s0l, vld1q_f32(a + i), vld1q_f32(b + i));
+        s0h = vfmaq_f32(s0h, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
+        s1l = vfmaq_f32(s1l, vld1q_f32(a + i + 8), vld1q_f32(b + i + 8));
+        s1h = vfmaq_f32(s1h, vld1q_f32(a + i + 12), vld1q_f32(b + i + 12));
     }
-    for (; i + 4 <= n; i += 4)
-        s0 = vfmaq_f32(s0, vld1q_f32(a + i), vld1q_f32(b + i));
-    float r = vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)));
+    for (; i + 8 <= n; i += 8) {
+        s0l = vfmaq_f32(s0l, vld1q_f32(a + i), vld1q_f32(b + i));
+        s0h = vfmaq_f32(s0h, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
+    }
+    float r = neon_sum8(vaddq_f32(s0l, s1l), vaddq_f32(s0h, s1h));
     for (; i < n; i++)
-        r += a[i] * b[i];
+        r = fmaf(a[i], b[i], r);
     return r;
 }
 
+/* axpy_f32_avx2 on NEON: a fused multiply-add per element either way, so
+   the stride does not matter; the tail fused as there. */
 static void axpy_f32_neon(float *y, float a, const float *x, size_t n)
 {
     float32x4_t va = vdupq_n_f32(a);
@@ -1678,7 +1685,7 @@ static void axpy_f32_neon(float *y, float a, const float *x, size_t n)
     for (; i + 4 <= n; i += 4)
         vst1q_f32(y + i, vfmaq_f32(vld1q_f32(y + i), va, vld1q_f32(x + i)));
     for (; i < n; i++)
-        y[i] += a * x[i];
+        y[i] = fmaf(a, x[i], y[i]);
 }
 #endif
 
